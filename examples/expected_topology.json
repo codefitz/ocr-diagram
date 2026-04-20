@@ -1,0 +1,38 @@
+{
+  "nodes": [
+    {
+      "id": "internet-1",
+      "label": "Internet",
+      "type": "network",
+      "ip": null
+    },
+    {
+      "id": "web-app-2",
+      "label": "Web App 10.0.1.10",
+      "type": "application",
+      "ip": "10.0.1.10"
+    },
+    {
+      "id": "postgres-db-3",
+      "label": "Postgres DB 10.0.2.20",
+      "type": "database",
+      "ip": "10.0.2.20"
+    }
+  ],
+  "edges": [
+    {
+      "from": "internet-1",
+      "to": "web-app-2",
+      "protocol": "HTTPS",
+      "port": "443",
+      "directional": false
+    },
+    {
+      "from": "web-app-2",
+      "to": "postgres-db-3",
+      "protocol": "TCP",
+      "port": "5432",
+      "directional": false
+    }
+  ]
+}

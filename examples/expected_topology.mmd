@@ -1,0 +1,6 @@
+graph TD
+    internet-1["Internet\n(network)"]
+    web-app-2["Web App 10.0.1.10\n(application)"]
+    postgres-db-3["Postgres DB 10.0.2.20\n(database)"]
+    internet-1 ---|"HTTPS 443"| web-app-2
+    web-app-2 ---|"TCP 5432"| postgres-db-3
