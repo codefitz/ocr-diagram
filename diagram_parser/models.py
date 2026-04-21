@@ -34,6 +34,10 @@ class Point:
     x: float
     y: float
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "Point":
+        return cls(x=float(payload["x"]), y=float(payload["y"]))
+
     def to_dict(self) -> dict[str, float]:
         return {"x": round(self.x, 2), "y": round(self.y, 2)}
 
@@ -44,6 +48,15 @@ class BoundingBox:
     top: float
     right: float
     bottom: float
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "BoundingBox":
+        return cls(
+            left=float(payload["left"]),
+            top=float(payload["top"]),
+            right=float(payload["right"]),
+            bottom=float(payload["bottom"]),
+        )
 
     @property
     def width(self) -> float:
@@ -109,6 +122,7 @@ class BoundingBox:
 
 @dataclass(frozen=True, slots=True)
 class OCRSpan:
+    page_id: str
     span_id: str
     text: str
     confidence: float
@@ -119,8 +133,23 @@ class OCRSpan:
     def center(self) -> Point:
         return self.bbox.center
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "OCRSpan":
+        polygon = tuple(Point.from_dict(point) for point in payload["polygon"])
+        if len(polygon) != 4:
+            raise ValueError(f"Expected 4 polygon points, got {len(polygon)}")
+        return cls(
+            page_id=str(payload["page_id"]),
+            span_id=str(payload["span_id"]),
+            text=str(payload["text"]),
+            confidence=float(payload["confidence"]),
+            bbox=BoundingBox.from_dict(payload["bbox"]),
+            polygon=polygon,  # type: ignore[arg-type]
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
+            "page_id": self.page_id,
             "span_id": self.span_id,
             "text": self.text,
             "confidence": round(self.confidence, 4),
@@ -132,6 +161,7 @@ class OCRSpan:
 
 @dataclass(frozen=True, slots=True)
 class CandidateNode:
+    page_id: str
     node_id: str
     label: str
     bbox: BoundingBox
@@ -145,6 +175,7 @@ class CandidateNode:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "page_id": self.page_id,
             "node_id": self.node_id,
             "label": self.label,
             "bbox": self.bbox.to_dict(),
@@ -179,6 +210,7 @@ class LineSegment:
 
 @dataclass(frozen=True, slots=True)
 class ConnectionCandidate:
+    page_id: str
     from_node_id: str
     to_node_id: str
     line: LineSegment
@@ -187,6 +219,7 @@ class ConnectionCandidate:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "page_id": self.page_id,
             "from_node_id": self.from_node_id,
             "to_node_id": self.to_node_id,
             "line": self.line.to_dict(),
@@ -196,21 +229,34 @@ class ConnectionCandidate:
 
 
 @dataclass(slots=True)
+class DocumentPage:
+    page_id: str
+    source_path: Path
+    image: Any = field(repr=False)
+    width: int = 0
+    height: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "page_id": self.page_id,
+            "source_path": str(self.source_path),
+            "width": self.width,
+            "height": self.height,
+        }
+
+
+@dataclass(slots=True)
 class StructuredDiagram:
     image_path: Path
+    pages: list[DocumentPage]
     ocr_spans: list[OCRSpan]
     candidate_nodes: list[CandidateNode]
     candidate_connections: list[ConnectionCandidate]
-    image_size: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "image_path": str(self.image_path),
-            "image_size": (
-                {"width": self.image_size[0], "height": self.image_size[1]}
-                if self.image_size
-                else None
-            ),
+            "pages": [page.to_dict() for page in self.pages],
             "ocr_spans": [span.to_dict() for span in self.ocr_spans],
             "candidate_nodes": [node.to_dict() for node in self.candidate_nodes],
             "candidate_connections": [edge.to_dict() for edge in self.candidate_connections],

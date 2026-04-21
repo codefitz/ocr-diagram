@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 from diagram_parser.config import ConnectionConfig
+from diagram_parser.processing.grouping import is_edge_label_text
 from diagram_parser.models import (
     CandidateNode,
     ConnectionCandidate,
@@ -46,7 +46,11 @@ def _distance_to_segment(point: Point, segment: LineSegment) -> float:
 
 def _nearest_node(point: Point, nodes: list[CandidateNode], max_distance: float) -> CandidateNode | None:
     ranked = sorted(
-        ((node.bbox.distance_to_point(point), node) for node in nodes),
+        (
+            (node.bbox.distance_to_point(point), node)
+            for node in nodes
+            if node.type_hint != "zone"
+        ),
         key=lambda item: item[0],
     )
     if not ranked or ranked[0][0] > max_distance:
@@ -60,31 +64,33 @@ def _collect_label_hints(
     excluded_span_ids: set[str],
     max_distance: float,
 ) -> tuple[str, ...]:
-    nearby_hints: list[str] = []
+    ranked_hints: list[tuple[float, str]] = []
     for span in spans:
         if span.span_id in excluded_span_ids:
             continue
-        if _distance_to_segment(span.center, segment) <= max_distance:
-            nearby_hints.append(span.text)
-    return tuple(dict.fromkeys(nearby_hints))
+        if not is_edge_label_text(span.text):
+            continue
+        distance = _distance_to_segment(span.center, segment)
+        if distance <= max_distance:
+            ranked_hints.append((distance, span.text))
+
+    ranked_hints.sort(key=lambda item: item[0])
+    ordered_labels = [label for _, label in ranked_hints]
+    return tuple(dict.fromkeys(ordered_labels))
 
 
 def detect_connections(
-    image_path: Path,
+    image: Any,
     spans: list[OCRSpan],
     nodes: list[CandidateNode],
     config: ConnectionConfig,
-) -> tuple[list[ConnectionCandidate], tuple[int, int] | None]:
+) -> list[ConnectionCandidate]:
     """Detect simple line segments and map them to candidate nodes."""
 
     if not nodes:
-        return [], None
+        return []
 
     cv2, np = _load_cv_dependencies()
-    image = cv2.imread(str(image_path))
-    if image is None:
-        raise FileNotFoundError(f"Unable to read image: {image_path}")
-
     image_height, image_width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -112,10 +118,11 @@ def detect_connections(
     )
 
     if lines is None:
-        return [], (image_width, image_height)
+        return []
 
     grouped_connections: dict[tuple[str, str], list[ConnectionCandidate]] = defaultdict(list)
     node_to_span_ids = {node.node_id: set(node.text_span_ids) for node in nodes}
+    page_id = nodes[0].page_id
 
     for detected_line in lines:
         x1, y1, x2, y2 = detected_line[0]
@@ -141,6 +148,7 @@ def detect_connections(
         confidence = min(0.99, 0.4 + (segment.length / max(image_width, image_height)))
         grouped_connections[key].append(
             ConnectionCandidate(
+                page_id=page_id,
                 from_node_id=source.node_id,
                 to_node_id=target.node_id,
                 line=segment,
@@ -155,4 +163,4 @@ def detect_connections(
         deduped_connections.append(best)
 
     deduped_connections.sort(key=lambda edge: (edge.from_node_id, edge.to_node_id))
-    return deduped_connections, (image_width, image_height)
+    return deduped_connections

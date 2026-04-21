@@ -22,22 +22,78 @@ The pipeline is intentionally staged and does not send raw images to the LLM:
 ## Install
 
 ```bash
-python3 -m venv .venv
+python3.11 --version  # Prefer Python 3.11 or 3.12 for Paddle-based installs
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+`paddleocr` also requires `paddlepaddle` at runtime. In practice, Paddle support is much smoother on Python 3.11/3.12 than on Python 3.14.
 
 ## Run
 
 ```bash
 python3 main.py /path/to/diagram.png --model your-lmstudio-model
+python3 main.py /path/to/diagram.pdf --model your-lmstudio-model
 ```
 
-Outputs are written to `output/` next to the input image by default:
+You can choose the execution mode:
+
+```bash
+python3 main.py /path/to/diagram.pdf --mode pipeline
+python3 main.py /path/to/diagram.pdf --mode direct-llm --model your-vision-model
+python3 main.py /path/to/diagram.pdf --mode both --model your-vision-model
+```
+
+If LMStudio is not running yet, you can still generate provisional output from the deterministic stages only:
+
+```bash
+python3 main.py /path/to/diagram.pdf --skip-llm
+```
+
+Or keep the LLM stage enabled but fall back automatically when LMStudio is unreachable:
+
+```bash
+python3 main.py /path/to/diagram.pdf --model your-lmstudio-model --allow-llm-fallback
+```
+
+Some OpenAI-compatible local servers reject `response_format`. This client disables that field by default and relies on prompt-constrained JSON output instead.
+
+For safer first passes on large PDFs, start with a lower raster scale and a single page:
+
+```bash
+python3 main.py /path/to/diagram.pdf \
+  --model your-lmstudio-model \
+  --pdf-scale 1.0 \
+  --max-pages 1
+```
+
+Outputs are written to the project-local `output/` directory by default, split by mode:
+
+- `output/pipeline/`
+- `output/direct_llm/`
+
+Each subdirectory may include:
 
 - `topology.json`
 - `topology.mmd`
 - `structured_candidates.json`
+- `ocr_spans.json`
+- `llm_debug.json`
+
+`ocr_spans.json` is reused automatically for the pipeline mode when the source path and OCR settings match, so you can tune grouping and connection logic without rerunning PaddleOCR every time. Use `--refresh-ocr-cache` to force a fresh OCR pass.
+
+The `direct-llm` mode sends rendered page images to an OpenAI-compatible multimodal endpoint. Use a vision-capable model there; text-only models will not work reliably.
+
+If PaddleOCR cannot download models in your environment, pass local model directories:
+
+```bash
+python3 main.py /path/to/diagram.pdf \
+  --model your-lmstudio-model \
+  --ocr-det-model-dir /path/to/text_detection_model \
+  --ocr-rec-model-dir /path/to/text_recognition_model \
+  --ocr-cls-model-dir /path/to/textline_orientation_model
+```
 
 ## Example
 
