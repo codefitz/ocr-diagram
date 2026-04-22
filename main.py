@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from diagram_parser.config import PipelineConfig
-from diagram_parser.main import run_direct_llm, run_pipeline
+if TYPE_CHECKING:
+    from diagram_parser.config import PipelineConfig
 
 
-SUPPORTED_PYTHON_MINOR_VERSIONS = {(3, 11), (3, 12)}
+MIN_SUPPORTED_PYTHON = (3, 11)
+MAX_SUPPORTED_PYTHON_EXCLUSIVE = (3, 14)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,14 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def validate_runtime() -> None:
     version = sys.version_info[:2]
-    if version not in SUPPORTED_PYTHON_MINOR_VERSIONS:
-        supported = ", ".join(
-            f"{major}.{minor}" for major, minor in sorted(SUPPORTED_PYTHON_MINOR_VERSIONS)
-        )
+    if not (MIN_SUPPORTED_PYTHON <= version < MAX_SUPPORTED_PYTHON_EXCLUSIVE):
         raise RuntimeError(
             f"Unsupported Python runtime: {sys.version.split()[0]}. "
-            f"This project currently expects Python {supported} because PaddlePaddle "
-            "does not provide reliable support for newer runtimes such as 3.13/3.14."
+            "This project currently expects Python 3.11, 3.12, or 3.13. "
+            "Python 3.14+ is not yet supported by the PaddlePaddle dependency stack."
         )
 
 
@@ -125,6 +123,9 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     validate_runtime()
+
+    from diagram_parser.config import PipelineConfig
+    from diagram_parser.main import run_direct_llm, run_pipeline
 
     image_path = args.image.expanduser().resolve()
     output_dir = (

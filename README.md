@@ -21,14 +21,17 @@ The pipeline is intentionally staged and does not send raw images to the LLM:
 
 ## Install
 
+This project currently supports Python 3.11, 3.12, and 3.13.
+
 ```bash
-python3.11 --version  # Prefer Python 3.11 or 3.12 for Paddle-based installs
+python3.11 --version  # Python 3.11, 3.12, or 3.13
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`paddleocr` also requires `paddlepaddle` at runtime. In practice, Paddle support is much smoother on Python 3.11/3.12 than on Python 3.14.
+`paddleocr` also requires `paddlepaddle` at runtime. Python 3.14+ is not yet
+supported by the current PaddlePaddle dependency stack.
 
 ## Run
 
