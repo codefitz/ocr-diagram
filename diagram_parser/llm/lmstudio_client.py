@@ -1,4 +1,4 @@
-"""Stage 4: send structured data to LMStudio and parse strict JSON."""
+"""Stage 4: send structured data to a local LLM server and parse strict JSON."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import re
 import base64
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from diagram_parser.config import LLMConfig
 from diagram_parser.models import DocumentPage, StructuredDiagram
@@ -38,6 +39,12 @@ class LLMResponseError(ValueError):
     def __init__(self, message: str, artifacts: LLMCallArtifacts) -> None:
         super().__init__(message)
         self.artifacts = artifacts
+
+
+@dataclass(frozen=True, slots=True)
+class ChatEndpoint:
+    kind: str
+    url: str
 
 
 def _append_no_think(prompt: str) -> str:
@@ -94,6 +101,28 @@ def _topology_json_schema_response_format() -> dict[str, Any]:
             },
         },
     }
+
+
+def _topology_json_schema() -> dict[str, Any]:
+    return _topology_json_schema_response_format()["json_schema"]["schema"]
+
+
+def _resolve_chat_endpoint(base_url: str) -> ChatEndpoint:
+    normalized = base_url.rstrip("/")
+    parsed = urlsplit(normalized)
+    path = parsed.path.rstrip("/")
+
+    if path.endswith("/chat/completions"):
+        return ChatEndpoint(kind="openai", url=normalized)
+    if path.endswith("/v1"):
+        return ChatEndpoint(kind="openai", url=f"{normalized}/chat/completions")
+    if path.endswith("/api/chat"):
+        return ChatEndpoint(kind="ollama", url=normalized)
+    if path.endswith("/api"):
+        return ChatEndpoint(kind="ollama", url=f"{normalized}/chat")
+    if not path:
+        return ChatEndpoint(kind="openai", url=f"{normalized}/v1/chat/completions")
+    return ChatEndpoint(kind="openai", url=f"{normalized}/chat/completions")
 
 
 def _build_llm_evidence(structured_diagram: StructuredDiagram) -> dict[str, Any]:
@@ -265,11 +294,11 @@ def _extract_json_object(raw_content: str) -> dict[str, Any]:
     if not match:
         excerpt = raw_content.strip().replace("\n", " ")
         raise ValueError(
-            f"LMStudio response did not contain a JSON object. Raw content: {excerpt[:1200]}"
+            f"LLM response did not contain a JSON object. Raw content: {excerpt[:1200]}"
         )
     parsed = json.loads(match.group(0))
     if not isinstance(parsed, dict):
-        raise ValueError("LMStudio response was not a JSON object.")
+        raise ValueError("LLM response was not a JSON object.")
     return parsed
 
 
@@ -288,7 +317,7 @@ def _normalize_message_content(content: Any) -> str:
                         parts.append(text)
                         break
         return "\n".join(part for part in parts if part).strip()
-    raise ValueError("LMStudio returned a non-text response.")
+    raise ValueError("LLM server returned a non-text response.")
 
 
 def _page_to_data_url(page: DocumentPage) -> str:
@@ -304,7 +333,73 @@ def _page_to_data_url(page: DocumentPage) -> str:
     return f"data:image/png;base64,{base64.b64encode(encoded_bytes).decode('ascii')}"
 
 
+def _extract_data_url_payload(url: str) -> str:
+    if not url.startswith("data:") or "," not in url:
+        raise ValueError(
+            "Ollama native API expects base64 image data. Use a data URL or an OpenAI-compatible /v1 endpoint."
+        )
+    return url.split(",", 1)[1]
+
+
+def _convert_messages_to_ollama(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted_messages: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content", "")
+
+        if isinstance(content, str):
+            converted_messages.append({"role": role, "content": content})
+            continue
+
+        if not isinstance(content, list):
+            raise ValueError("Unsupported message content for Ollama native API.")
+
+        text_parts: list[str] = []
+        images: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+
+            item_type = item.get("type")
+            if item_type == "text":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text)
+                continue
+
+            if item_type == "image_url":
+                image_url = item.get("image_url")
+                if isinstance(image_url, dict):
+                    url = image_url.get("url")
+                    if isinstance(url, str) and url.strip():
+                        images.append(_extract_data_url_payload(url))
+
+        converted_message: dict[str, Any] = {
+            "role": role,
+            "content": "\n".join(part for part in text_parts if part).strip(),
+        }
+        if images:
+            converted_message["images"] = images
+        converted_messages.append(converted_message)
+
+    return converted_messages
+
+
 def _extract_content_from_payload(payload: dict[str, Any]) -> str:
+    message = payload.get("message")
+    if isinstance(message, dict):
+        for key in ("content", "thinking"):
+            if key in message:
+                try:
+                    normalized = _normalize_message_content(message[key])
+                except ValueError:
+                    normalized = ""
+                if normalized:
+                    return normalized
+
     choices = payload.get("choices")
     if isinstance(choices, list) and choices:
         first_choice = choices[0]
@@ -335,13 +430,27 @@ def _extract_content_from_payload(payload: dict[str, Any]) -> str:
     return ""
 
 
-def _post_chat_completion(
-    requests_module: Any,
+def _build_request_payload(
+    endpoint: ChatEndpoint,
     config: LLMConfig,
     messages: list[dict[str, Any]],
-    artifacts: LLMCallArtifacts,
-) -> str:
-    request_payload: dict[str, Any] = {
+) -> dict[str, Any]:
+    if endpoint.kind == "ollama":
+        request_payload: dict[str, Any] = {
+            "model": config.model,
+            "messages": _convert_messages_to_ollama(messages),
+            "stream": False,
+            "think": False,
+            "options": {
+                "temperature": config.temperature,
+                "num_predict": config.max_tokens,
+            },
+        }
+        if config.use_response_format:
+            request_payload["format"] = _topology_json_schema()
+        return request_payload
+
+    request_payload = {
         "model": config.model,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
@@ -350,10 +459,21 @@ def _post_chat_completion(
     }
     if config.use_response_format:
         request_payload["response_format"] = _topology_json_schema_response_format()
+    return request_payload
+
+
+def _post_chat_completion(
+    requests_module: Any,
+    config: LLMConfig,
+    messages: list[dict[str, Any]],
+    artifacts: LLMCallArtifacts,
+) -> str:
+    endpoint = _resolve_chat_endpoint(config.base_url)
+    request_payload = _build_request_payload(endpoint, config, messages)
 
     artifacts.request_messages = messages
     response = requests_module.post(
-        url=f"{config.base_url.rstrip('/')}/chat/completions",
+        url=endpoint.url,
         headers={"Content-Type": "application/json"},
         json=request_payload,
         timeout=config.timeout_seconds,
@@ -362,9 +482,12 @@ def _post_chat_completion(
         response.raise_for_status()
     except requests_module.exceptions.HTTPError as exc:
         if response.status_code == 400 and config.use_response_format:
-            request_payload.pop("response_format", None)
+            if endpoint.kind == "ollama":
+                request_payload.pop("format", None)
+            else:
+                request_payload.pop("response_format", None)
             response = requests_module.post(
-                url=f"{config.base_url.rstrip('/')}/chat/completions",
+                url=endpoint.url,
                 headers={"Content-Type": "application/json"},
                 json=request_payload,
                 timeout=config.timeout_seconds,
@@ -374,7 +497,7 @@ def _post_chat_completion(
             response_text = response.text.strip()
             detail = f" Response body: {response_text[:1200]}" if response_text else ""
             raise RuntimeError(
-                f"LMStudio returned HTTP {response.status_code} for model {config.model}.{detail}"
+                f"LLM server returned HTTP {response.status_code} for model {config.model}.{detail}"
             ) from exc
     except requests_module.exceptions.RequestException:
         raise
@@ -388,13 +511,13 @@ def convert_structured_data_to_topology(
     structured_diagram: StructuredDiagram,
     config: LLMConfig,
 ) -> tuple[dict[str, Any], LLMCallArtifacts]:
-    """Call LMStudio's OpenAI-compatible API using structured, non-visual input."""
+    """Call a local LLM API using structured, non-visual input."""
 
     try:
         import requests
     except ImportError as exc:  # pragma: no cover - depends on local environment
         raise RuntimeError(
-            "The requests package is required for LMStudio API calls."
+            "The requests package is required for local LLM API calls."
         ) from exc
 
     base_messages = _build_prompt(structured_diagram)
@@ -402,10 +525,11 @@ def convert_structured_data_to_topology(
     try:
         content = _post_chat_completion(requests, config, base_messages, artifacts)
     except requests.exceptions.RequestException as exc:
+        detail = f" ({type(exc).__name__}: {exc})" if str(exc) else f" ({type(exc).__name__})"
         raise RuntimeError(
-            f"Could not reach LMStudio at {config.base_url}. "
-            "Start the LMStudio local server or rerun with `--skip-llm` "
-            "or `--allow-llm-fallback`."
+            f"Could not reach the LLM server at {config.base_url}. "
+            "Start LM Studio or Ollama, or rerun with `--skip-llm` "
+            f"or `--allow-llm-fallback`.{detail}"
         ) from exc
     artifacts.raw_content = content
     try:
@@ -433,13 +557,13 @@ def convert_images_to_topology(
     pages: list[DocumentPage],
     config: LLMConfig,
 ) -> tuple[dict[str, Any], LLMCallArtifacts]:
-    """Call LMStudio directly with rendered page images."""
+    """Call a local LLM API directly with rendered page images."""
 
     try:
         import requests
     except ImportError as exc:  # pragma: no cover - depends on local environment
         raise RuntimeError(
-            "The requests package is required for LMStudio API calls."
+            "The requests package is required for local LLM API calls."
         ) from exc
 
     base_messages = _build_direct_llm_prompt(image_path, pages)
@@ -447,9 +571,10 @@ def convert_images_to_topology(
     try:
         content = _post_chat_completion(requests, config, base_messages, artifacts)
     except requests.exceptions.RequestException as exc:
+        detail = f" ({type(exc).__name__}: {exc})" if str(exc) else f" ({type(exc).__name__})"
         raise RuntimeError(
-            f"Could not reach LMStudio at {config.base_url}. "
-            "Start the LMStudio local server or rerun with `--skip-llm`."
+            f"Could not reach the LLM server at {config.base_url}. "
+            f"Start LM Studio or Ollama, or rerun with `--skip-llm`.{detail}"
         ) from exc
     artifacts.raw_content = content
     try:

@@ -30,13 +30,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         type=str,
         default=None,
-        help="LMStudio model identifier. Defaults to config default.",
+        help="Model identifier for the configured local LLM server.",
     )
     parser.add_argument(
         "--base-url",
         type=str,
         default=None,
-        help="LMStudio OpenAI-compatible base URL. Defaults to http://127.0.0.1:1234/v1.",
+        help=(
+            "Base URL or chat endpoint for LM Studio or Ollama. "
+            "Examples: http://127.0.0.1:1234/v1, http://127.0.0.1:11434/v1, "
+            "http://127.0.0.1:11434/api."
+        ),
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=None,
+        help="Timeout for LLM API requests in seconds. Defaults to 300.",
     )
     parser.add_argument(
         "--mode",
@@ -52,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-llm-fallback",
         action="store_true",
-        help="If LMStudio is unreachable, continue with deterministic fallback output.",
+        help="If the configured LLM server is unreachable, continue with deterministic fallback output.",
     )
     parser.add_argument(
         "--group-distance",
@@ -145,6 +155,8 @@ def main() -> None:
         config.llm.model = args.model
     if args.base_url:
         config.llm.base_url = args.base_url
+    if args.timeout_seconds is not None:
+        config.llm.timeout_seconds = args.timeout_seconds
     if args.group_distance is not None:
         config.grouping.max_merge_distance = args.group_distance
     if args.endpoint_distance is not None:

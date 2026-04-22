@@ -50,7 +50,7 @@ class LLMConfig:
     base_url: str = "http://127.0.0.1:1234/v1"
     model: str = "local-model"
     temperature: float = 0.0
-    timeout_seconds: int = 120
+    timeout_seconds: int = 300
     max_tokens: int = 2400
 
 

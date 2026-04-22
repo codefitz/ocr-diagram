@@ -1,4 +1,4 @@
-"""LMStudio integration."""
+"""Local LLM integration."""
 
 from .lmstudio_client import convert_images_to_topology, convert_structured_data_to_topology
 

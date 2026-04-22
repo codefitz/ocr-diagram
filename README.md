@@ -13,7 +13,7 @@ The pipeline is intentionally staged and does not send raw images to the LLM:
 3. `diagram_parser/processing/connections.py`
    Uses OpenCV line detection to infer node-to-node connections from image geometry.
 4. `diagram_parser/llm/lmstudio_client.py`
-   Sends only structured evidence to LMStudio and requests strict JSON output.
+   Sends only structured evidence to a local LLM server such as LM Studio or Ollama and requests strict JSON output.
 5. `diagram_parser/processing/validation.py`
    Deterministically validates the LLM response against the supported topology schema.
 6. `diagram_parser/output/writers.py`
@@ -40,6 +40,24 @@ python3 main.py /path/to/diagram.png --model your-lmstudio-model
 python3 main.py /path/to/diagram.pdf --model your-lmstudio-model
 ```
 
+The LLM client accepts:
+
+- LM Studio OpenAI-compatible URLs such as `http://127.0.0.1:1234/v1`
+- Ollama OpenAI-compatible URLs such as `http://127.0.0.1:11434/v1`
+- Ollama native API URLs such as `http://127.0.0.1:11434/api`
+
+Example with Ollama:
+
+```bash
+python3 main.py /path/to/diagram.png \
+  --model gemma3 \
+  --base-url http://127.0.0.1:11434/api
+```
+
+Large local or remote models can take longer to answer the structured pipeline
+prompt. The default request timeout is 300 seconds, and you can override it with
+`--timeout-seconds`.
+
 You can choose the execution mode:
 
 ```bash
@@ -48,19 +66,19 @@ python3 main.py /path/to/diagram.pdf --mode direct-llm --model your-vision-model
 python3 main.py /path/to/diagram.pdf --mode both --model your-vision-model
 ```
 
-If LMStudio is not running yet, you can still generate provisional output from the deterministic stages only:
+If your local LLM server is not running yet, you can still generate provisional output from the deterministic stages only:
 
 ```bash
 python3 main.py /path/to/diagram.pdf --skip-llm
 ```
 
-Or keep the LLM stage enabled but fall back automatically when LMStudio is unreachable:
+Or keep the LLM stage enabled but fall back automatically when the configured LLM server is unreachable:
 
 ```bash
 python3 main.py /path/to/diagram.pdf --model your-lmstudio-model --allow-llm-fallback
 ```
 
-Some OpenAI-compatible local servers reject `response_format`. This client disables that field by default and relies on prompt-constrained JSON output instead.
+Some local servers reject strict structured-output settings. This client retries without them when necessary and otherwise relies on prompt-constrained JSON output.
 
 For safer first passes on large PDFs, start with a lower raster scale and a single page:
 
@@ -86,7 +104,7 @@ Each subdirectory may include:
 
 `ocr_spans.json` is reused automatically for the pipeline mode when the source path and OCR settings match, so you can tune grouping and connection logic without rerunning PaddleOCR every time. Use `--refresh-ocr-cache` to force a fresh OCR pass.
 
-The `direct-llm` mode sends rendered page images to an OpenAI-compatible multimodal endpoint. Use a vision-capable model there; text-only models will not work reliably.
+The `direct-llm` mode sends rendered page images to a multimodal endpoint. Use a vision-capable model there; text-only models will not work reliably.
 
 If PaddleOCR cannot download models in your environment, pass local model directories:
 
