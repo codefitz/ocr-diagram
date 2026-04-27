@@ -17,7 +17,7 @@ The pipeline is intentionally staged and does not send raw images to the LLM:
 5. `diagram_parser/processing/validation.py`
    Deterministically validates the LLM response against the supported topology schema.
 6. `diagram_parser/output/writers.py`
-   Saves JSON and Mermaid output.
+   Saves topology JSON, Mermaid, and uControl asset/tag body JSON output.
 
 ## Install
 
@@ -72,6 +72,19 @@ If your local LLM server is not running yet, you can still generate provisional 
 python3 main.py /path/to/diagram.pdf --skip-llm
 ```
 
+By default, prompts include local uControl/BMC Discovery guidance from
+`diagram_parser/llm/rag/ucontrol_asset_tag_schema.md`, and outputs include
+`ucontrol_asset_tags.json`. This file contains JSON body-shaped asset records
+for `/api/asset/tag/create` plus provisional directional PK/FK relationship
+identity fields. It does not create or call the API.
+
+Disable these independently when needed:
+
+```bash
+python3 main.py /path/to/diagram.pdf --no-ucontrol-rag
+python3 main.py /path/to/diagram.pdf --no-ucontrol-asset-tags
+```
+
 Or keep the LLM stage enabled but fall back automatically when the configured LLM server is unreachable:
 
 ```bash
@@ -97,6 +110,7 @@ Outputs are written to the project-local `output/` directory by default, split b
 Each subdirectory may include:
 
 - `topology.json`
+- `ucontrol_asset_tags.json`
 - `topology.mmd`
 - `structured_candidates.json`
 - `ocr_spans.json`
@@ -122,4 +136,5 @@ Illustrative example assets are in [`examples/`](/Volumes/Hub/Code/GitHub/ocr-di
 
 - Input sketch: [`simple_topology.svg`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/simple_topology.svg)
 - Expected JSON: [`expected_topology.json`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_topology.json)
+- Expected uControl asset/tag JSON: [`expected_ucontrol_asset_tags.json`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_ucontrol_asset_tags.json)
 - Expected Mermaid: [`expected_topology.mmd`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_topology.mmd)

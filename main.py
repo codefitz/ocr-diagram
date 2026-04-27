@@ -60,6 +60,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip Stage 4 LLM normalization and use deterministic fallback output only.",
     )
     parser.add_argument(
+        "--no-ucontrol-rag",
+        action="store_true",
+        help="Do not add uControl/BMC Discovery asset schema guidance to LLM prompts.",
+    )
+    parser.add_argument(
+        "--no-ucontrol-asset-tags",
+        action="store_true",
+        help="Do not write ucontrol_asset_tags.json.",
+    )
+    parser.add_argument(
         "--allow-llm-fallback",
         action="store_true",
         help="If the configured LLM server is unreachable, continue with deterministic fallback output.",
@@ -149,6 +159,10 @@ def main() -> None:
     config = PipelineConfig()
     if args.skip_llm:
         config.llm.enabled = False
+    if args.no_ucontrol_rag:
+        config.llm.include_ucontrol_asset_rag = False
+    if args.no_ucontrol_asset_tags:
+        config.output.save_ucontrol_asset_tags = False
     if args.allow_llm_fallback:
         config.llm.allow_fallback_on_error = True
     if args.model:

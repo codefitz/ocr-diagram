@@ -45,6 +45,7 @@ class ConnectionConfig:
 class LLMConfig:
     enabled: bool = True
     allow_fallback_on_error: bool = False
+    include_ucontrol_asset_rag: bool = True
     use_response_format: bool = True
     repair_retries: int = 1
     base_url: str = "http://127.0.0.1:1234/v1"
@@ -57,6 +58,7 @@ class LLMConfig:
 @dataclass(slots=True)
 class OutputConfig:
     json_indent: int = 2
+    save_ucontrol_asset_tags: bool = True
     save_intermediate: bool = True
     save_llm_debug: bool = True
 

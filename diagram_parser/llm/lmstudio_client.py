@@ -6,6 +6,7 @@ import json
 import re
 import base64
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -15,6 +16,7 @@ from diagram_parser.models import DocumentPage, StructuredDiagram
 
 JSON_BLOCK_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 CODE_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+UCONTROL_RAG_PATH = Path(__file__).with_name("rag") / "ucontrol_asset_tag_schema.md"
 
 
 @dataclass(slots=True)
@@ -107,6 +109,15 @@ def _topology_json_schema() -> dict[str, Any]:
     return _topology_json_schema_response_format()["json_schema"]["schema"]
 
 
+def _load_ucontrol_asset_rag(config: LLMConfig) -> str:
+    if not config.include_ucontrol_asset_rag:
+        return ""
+    try:
+        return UCONTROL_RAG_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def _resolve_chat_endpoint(base_url: str) -> ChatEndpoint:
     normalized = base_url.rstrip("/")
     parsed = urlsplit(normalized)
@@ -166,7 +177,7 @@ def _build_llm_evidence(structured_diagram: StructuredDiagram) -> dict[str, Any]
     }
 
 
-def _build_prompt(structured_diagram: StructuredDiagram) -> list[dict[str, str]]:
+def _build_prompt(structured_diagram: StructuredDiagram, config: LLMConfig) -> list[dict[str, str]]:
     schema = {
         "nodes": [
             {
@@ -186,6 +197,15 @@ def _build_prompt(structured_diagram: StructuredDiagram) -> list[dict[str, str]]
             }
         ],
     }
+    ucontrol_rag = _load_ucontrol_asset_rag(config)
+    ucontrol_guidance = (
+        "\n\nAdditional optional target-output guidance:\n"
+        f"{ucontrol_rag}\n"
+        "This guidance is for choosing accurate node labels and coarse topology types. "
+        "Still return only the strict topology JSON schema below from this LLM call."
+        if ucontrol_rag
+        else ""
+    )
     instructions = (
         "You convert structured infrastructure diagram evidence into JSON topology.\n"
         "Rules:\n"
@@ -196,6 +216,7 @@ def _build_prompt(structured_diagram: StructuredDiagram) -> list[dict[str, str]]
         "5. Keep node types within the allowed enum.\n"
         "6. Preserve connections only when the candidate connection list supports them.\n"
         "7. Prefer candidate node IDs where possible so edges can reference stable IDs.\n"
+        f"{ucontrol_guidance}\n"
         f"Schema:\n{json.dumps(schema, indent=2)}"
     )
     evidence = json.dumps(_build_llm_evidence(structured_diagram), indent=2)
@@ -213,11 +234,21 @@ def _build_prompt(structured_diagram: StructuredDiagram) -> list[dict[str, str]]
     ]
 
 
-def _build_direct_llm_prompt(image_path: str, pages: list[DocumentPage]) -> list[dict[str, Any]]:
+def _build_direct_llm_prompt(image_path: str, pages: list[DocumentPage], config: LLMConfig) -> list[dict[str, Any]]:
     page_refs = ", ".join(page.page_id for page in pages)
+    ucontrol_rag = _load_ucontrol_asset_rag(config)
+    ucontrol_guidance = (
+        "Additional optional target-output guidance:\n"
+        f"{ucontrol_rag}\n"
+        "This guidance is for choosing accurate node labels and coarse topology types. "
+        "Still return only the strict topology JSON schema below from this LLM call.\n"
+        if ucontrol_rag
+        else ""
+    )
     text_prompt = (
         "Return exactly one JSON object and nothing else.\n"
         "You are extracting infrastructure topology directly from diagram images.\n"
+        f"{ucontrol_guidance}"
         "Schema:\n"
         "{\n"
         '  "nodes": [{"id":"string","label":"string","type":"server|database|application|network|zone|unknown","ip":"string|null"}],\n'
@@ -243,10 +274,18 @@ def _build_direct_llm_prompt(image_path: str, pages: list[DocumentPage]) -> list
     return [{"role": "user", "content": content}]
 
 
-def _build_single_message_retry_prompt(structured_diagram: StructuredDiagram) -> list[dict[str, str]]:
+def _build_single_message_retry_prompt(structured_diagram: StructuredDiagram, config: LLMConfig) -> list[dict[str, str]]:
     evidence = json.dumps(_build_llm_evidence(structured_diagram), indent=2)
+    ucontrol_rag = _load_ucontrol_asset_rag(config)
+    ucontrol_guidance = (
+        f"Optional target-output guidance:\n{ucontrol_rag}\n"
+        "Still return only the strict topology JSON schema below.\n"
+        if ucontrol_rag
+        else ""
+    )
     retry_prompt = (
         "Return exactly one JSON object and nothing else.\n"
+        f"{ucontrol_guidance}"
         "Schema:\n"
         "{\n"
         '  "nodes": [{"id":"string","label":"string","type":"server|database|application|network|zone|unknown","ip":"string|null"}],\n'
@@ -520,7 +559,7 @@ def convert_structured_data_to_topology(
             "The requests package is required for local LLM API calls."
         ) from exc
 
-    base_messages = _build_prompt(structured_diagram)
+    base_messages = _build_prompt(structured_diagram, config)
     artifacts = LLMCallArtifacts()
     try:
         content = _post_chat_completion(requests, config, base_messages, artifacts)
@@ -539,7 +578,7 @@ def convert_structured_data_to_topology(
             artifacts.error = str(initial_error)
             raise LLMResponseError(str(initial_error), artifacts) from initial_error
 
-        repair_messages = _build_single_message_retry_prompt(structured_diagram)
+        repair_messages = _build_single_message_retry_prompt(structured_diagram, config)
         repair_content = _post_chat_completion(requests, config, repair_messages, artifacts)
         artifacts.repair_raw_content = repair_content
         try:
@@ -566,7 +605,7 @@ def convert_images_to_topology(
             "The requests package is required for local LLM API calls."
         ) from exc
 
-    base_messages = _build_direct_llm_prompt(image_path, pages)
+    base_messages = _build_direct_llm_prompt(image_path, pages, config)
     artifacts = LLMCallArtifacts()
     try:
         content = _post_chat_completion(requests, config, base_messages, artifacts)
