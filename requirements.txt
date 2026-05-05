@@ -1,5 +1,6 @@
 paddlepaddle
 paddleocr
+pypdfium2
 opencv-python
 numpy
 requests

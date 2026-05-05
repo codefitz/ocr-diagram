@@ -12,9 +12,11 @@ from diagram_parser.models import CandidateNode, OCRSpan, slugify
 
 TYPE_HINTS = {
     "database": ("database", "db", "postgres", "mysql", "redis", "mongodb", "rds"),
-    "application": ("application", "app", "api", "service", "frontend", "backend"),
-    "server": ("server", "host", "vm", "node", "ec2", "instance", "bastion"),
-    "network": ("internet", "gateway", "router", "switch", "network", "firewall", "lb", "load balancer", "vpc", "subnet"),
+    "software": ("software", "application", "app", "api", "service", "frontend", "backend"),
+    "host": ("server", "host", "vm", "node", "ec2", "instance", "bastion"),
+    "firewall": ("firewall", "fw", "waf"),
+    "router_switch": ("gateway", "router", "switch", "network", "lb", "load balancer"),
+    "network": ("internet", "vpc", "subnet"),
     "zone": ("zone", "segment", "dmz", "public", "private"),
 }
 

@@ -1,45 +1,32 @@
-# uControl Asset Tag JSON Body Guidance
+# uControl Infrastructure Model Guidance
 
-When diagram capture output is transformed for uControl asset/tag creation, each detected asset must be representable as this JSON body shape:
+Extract named infrastructure nodes and their relationships so the output can be transformed into a uControl model-create request body.
 
-```json
-{
-  "record_identifier": null,
-  "name": "Asset name from the diagram",
-  "short_name": null,
-  "type": null,
-  "product_version": null,
-  "instance": null,
-  "uControlID": null,
-  "environment": null,
-  "version": null,
-  "description": "Asset name from the diagram",
-  "application_id": null,
-  "guid": "stable-base64-identity",
-  "datasource_name": null,
-  "datasource_key": null,
-  "datasource": "UCONTROL",
-  "atrium_key": null,
-  "bmc_key": null,
-  "servicenow_key": null,
-  "kind": "BusinessApplicationInstance",
-  "deleted_date": "",
-  "deleted_status": false,
-  "merge_status": false
-}
-```
+Only extract nodes with an identifiable visible name. Ignore unnamed icons, unlabeled boundaries, decorative symbols, and inferred assets that are not visible in the diagram.
 
-Do not create the HTTP API call. Output JSON only.
+Separate asset names from role/type/description text:
 
-`record_identifier` is the unique ID created by uControl, so do not invent it during diagram extraction.
+- `Web Servers BDHW8KW3 BDHW8KW4 BDHW8KW5` means three `host` nodes named `BDHW8KW3`, `BDHW8KW4`, and `BDHW8KW5`.
+- `VM BDHW8KW6 Data Store Server` means one `host` node named `BDHW8KW6`.
+- `VM`, `Web Servers`, `Data Store Server`, `BACKUP`, CPU, RAM, OS, and hardware-model text are descriptions or specifications, not host names.
+- A router, switch, firewall, or load balancer can be named by its visible device label, such as `F5 Switch`; trailing OS or model text should not become the name.
 
-Use BMC Discovery-style node kinds for `kind`. Prefer these mappings when the diagram does not explicitly identify a more precise kind:
+Use these node types:
 
-- application: `BusinessApplicationInstance`
+- `host`: hosts, servers, VMs, EC2 instances, bastions, compute nodes
+- `router_switch`: routers, switches, gateways, load balancers, network devices
+- `firewall`: firewalls, WAFs, security appliances
+- `software`: applications, services, APIs, runtimes, frontend/backend components
+- `database`: databases, DB services, RDS, PostgreSQL, MySQL, Redis, MongoDB
+- `unknown`: only when a named infrastructure node is visible but the type is not clear
+
+The downstream uControl mapping uses these definitions:
+
+- host: `Host`
+- router_switch: `NetworkDevice`
+- firewall: `Firewall`
+- software: `SoftwareInstance`
 - database: `Database`
-- server or runtime component: `SoftwareInstance`
-- external network, internet, or third-party endpoint: `ExternalElement`
-- zone, boundary, or grouping: `GenericElement`
 - unknown: `GenericElement`
 
-Relationships are not documented yet. Preserve extracted topology edges and include a directional primary-key/foreign-key identity so downstream mapping has a stable source and target identity.
+Preserve visible relationships or connections between named nodes. Include protocol and port only when the diagram explicitly shows them.

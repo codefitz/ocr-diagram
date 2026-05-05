@@ -58,6 +58,7 @@ class LLMConfig:
 @dataclass(slots=True)
 class OutputConfig:
     json_indent: int = 2
+    application_name: str = "Application1"
     save_ucontrol_asset_tags: bool = True
     save_intermediate: bool = True
     save_llm_debug: bool = True

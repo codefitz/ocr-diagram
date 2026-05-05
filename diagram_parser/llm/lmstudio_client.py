@@ -17,6 +17,8 @@ from diagram_parser.models import DocumentPage, StructuredDiagram
 JSON_BLOCK_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 CODE_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 UCONTROL_RAG_PATH = Path(__file__).with_name("rag") / "ucontrol_asset_tag_schema.md"
+NODE_TYPE_ENUM = ["host", "router_switch", "firewall", "software", "database", "unknown"]
+NODE_TYPE_SCHEMA = "|".join(NODE_TYPE_ENUM)
 
 
 @dataclass(slots=True)
@@ -74,7 +76,7 @@ def _topology_json_schema_response_format() -> dict[str, Any]:
                                 "label": {"type": "string"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["server", "database", "application", "network", "zone", "unknown"],
+                                    "enum": NODE_TYPE_ENUM,
                                 },
                                 "ip": {"type": ["string", "null"]},
                             },
@@ -183,7 +185,7 @@ def _build_prompt(structured_diagram: StructuredDiagram, config: LLMConfig) -> l
             {
                 "id": "string",
                 "label": "string",
-                "type": "server|database|application|network|zone|unknown",
+                "type": NODE_TYPE_SCHEMA,
                 "ip": "string|null",
             }
         ],
@@ -201,7 +203,7 @@ def _build_prompt(structured_diagram: StructuredDiagram, config: LLMConfig) -> l
     ucontrol_guidance = (
         "\n\nAdditional optional target-output guidance:\n"
         f"{ucontrol_rag}\n"
-        "This guidance is for choosing accurate node labels and coarse topology types. "
+        "This guidance is for choosing accurate node labels and infrastructure node types. "
         "Still return only the strict topology JSON schema below from this LLM call."
         if ucontrol_rag
         else ""
@@ -211,11 +213,16 @@ def _build_prompt(structured_diagram: StructuredDiagram, config: LLMConfig) -> l
         "Rules:\n"
         "1. Return valid JSON only. No markdown.\n"
         "2. Use only evidence from the provided OCR spans, grouped candidate nodes, and candidate connections.\n"
-        "3. Do not hallucinate labels, IPs, protocols, ports, or edge directions.\n"
-        "4. If a value is unknown, use null.\n"
-        "5. Keep node types within the allowed enum.\n"
-        "6. Preserve connections only when the candidate connection list supports them.\n"
-        "7. Prefer candidate node IDs where possible so edges can reference stable IDs.\n"
+        "3. Extract only named infrastructure nodes: hosts, routers/switches, firewalls, software, and databases.\n"
+        "4. The node label must be the asset name, not the role, asset type, OS, CPU, RAM, or description text.\n"
+        "5. For host groups with multiple hostnames, create one host node per hostname.\n"
+        "6. For labels like `VM BDHW8KW6 Data Store Server`, use `BDHW8KW6` as the host label and `host` as the type.\n"
+        "7. Ignore any node that does not have an identifiable visible name.\n"
+        "8. Do not hallucinate labels, IPs, protocols, ports, or edge directions.\n"
+        "9. If a value is unknown, use null.\n"
+        "10. Keep node types within the allowed enum.\n"
+        "11. Preserve connections only when the candidate connection list supports them.\n"
+        "12. Prefer candidate node IDs where possible so edges can reference stable IDs.\n"
         f"{ucontrol_guidance}\n"
         f"Schema:\n{json.dumps(schema, indent=2)}"
     )
@@ -240,7 +247,7 @@ def _build_direct_llm_prompt(image_path: str, pages: list[DocumentPage], config:
     ucontrol_guidance = (
         "Additional optional target-output guidance:\n"
         f"{ucontrol_rag}\n"
-        "This guidance is for choosing accurate node labels and coarse topology types. "
+        "This guidance is for choosing accurate node labels and infrastructure node types. "
         "Still return only the strict topology JSON schema below from this LLM call.\n"
         if ucontrol_rag
         else ""
@@ -251,15 +258,20 @@ def _build_direct_llm_prompt(image_path: str, pages: list[DocumentPage], config:
         f"{ucontrol_guidance}"
         "Schema:\n"
         "{\n"
-        '  "nodes": [{"id":"string","label":"string","type":"server|database|application|network|zone|unknown","ip":"string|null"}],\n'
+        f'  "nodes": [{{"id":"string","label":"string","type":"{NODE_TYPE_SCHEMA}","ip":"string|null"}}],\n'
         '  "edges": [{"from":"string","to":"string","protocol":"string|null","port":"string|null","directional":true}]\n'
         "}\n"
         "Rules:\n"
         "1. Use only information visible in the diagram images.\n"
-        "2. Copy labels faithfully but you may normalize obvious OCR-free reading issues from the image itself.\n"
-        "3. Use null for unknown IPs, protocols, ports, or directions.\n"
-        "4. Do not invent hidden infrastructure.\n"
-        "5. Prefer concise node labels from the diagram, not long concatenations.\n"
+        "2. Extract only named infrastructure nodes: hosts, routers/switches, firewalls, software, and databases.\n"
+        "3. The node label must be the asset name, not the role, asset type, OS, CPU, RAM, or description text.\n"
+        "4. For host groups with multiple hostnames, create one host node per hostname.\n"
+        "5. For labels like `VM BDHW8KW6 Data Store Server`, use `BDHW8KW6` as the host label and `host` as the type.\n"
+        "6. Ignore any node that does not have an identifiable visible name.\n"
+        "7. Copy labels faithfully but you may normalize obvious OCR-free reading issues from the image itself.\n"
+        "8. Use null for unknown IPs, protocols, ports, or directions.\n"
+        "9. Do not invent hidden infrastructure.\n"
+        "10. Prefer concise node labels from the diagram, not long concatenations.\n"
         f"Source file: {image_path}\n"
         f"Rendered pages included: {page_refs}\n"
     )
@@ -288,10 +300,10 @@ def _build_single_message_retry_prompt(structured_diagram: StructuredDiagram, co
         f"{ucontrol_guidance}"
         "Schema:\n"
         "{\n"
-        '  "nodes": [{"id":"string","label":"string","type":"server|database|application|network|zone|unknown","ip":"string|null"}],\n'
+        f'  "nodes": [{{"id":"string","label":"string","type":"{NODE_TYPE_SCHEMA}","ip":"string|null"}}],\n'
         '  "edges": [{"from":"string","to":"string","protocol":"string|null","port":"string|null","directional":true}]\n'
         "}\n"
-        "Use only the supplied evidence. Use null for unknown fields. Do not hallucinate.\n"
+        "Use only the supplied evidence. Use asset names as labels, split host groups into one host per hostname, ignore unnamed nodes, use null for unknown fields, and do not hallucinate.\n"
         f"Evidence:\n{evidence}"
     )
     return [

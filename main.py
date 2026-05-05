@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -25,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Directory where topology.json and topology.mmd will be written.",
+    )
+    parser.add_argument(
+        "--application-name",
+        type=str,
+        default=None,
+        help="Application/model name for uControl output. Defaults to Application1.",
     )
     parser.add_argument(
         "--model",
@@ -67,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-ucontrol-asset-tags",
         action="store_true",
-        help="Do not write ucontrol_asset_tags.json.",
+        help="Do not write uControl model-create and retrieval JSON outputs.",
     )
     parser.add_argument(
         "--allow-llm-fallback",
@@ -139,6 +146,20 @@ def validate_runtime() -> None:
         )
 
 
+def _format_mode_failure(label: str, exc: Exception) -> str:
+    exception_only = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+    cause_lines: list[str] = []
+    cause = exc.__cause__
+    while cause is not None:
+        formatted_cause = "".join(
+            traceback.format_exception_only(type(cause), cause)
+        ).strip()
+        cause_lines.append(f"caused by {formatted_cause}")
+        cause = cause.__cause__
+    detail = "; ".join([exception_only, *cause_lines])
+    return f"[{label}] {detail}"
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -148,6 +169,10 @@ def main() -> None:
     from diagram_parser.main import run_direct_llm, run_pipeline
 
     image_path = args.image.expanduser().resolve()
+    if not image_path.exists():
+        raise FileNotFoundError(f"Input file does not exist: {image_path}")
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Input path is not a file: {image_path}")
     output_dir = (
         args.output_dir.expanduser().resolve()
         if args.output_dir is not None
@@ -163,6 +188,8 @@ def main() -> None:
         config.llm.include_ucontrol_asset_rag = False
     if args.no_ucontrol_asset_tags:
         config.output.save_ucontrol_asset_tags = False
+    if args.application_name:
+        config.output.application_name = args.application_name
     if args.allow_llm_fallback:
         config.llm.allow_fallback_on_error = True
     if args.model:
@@ -215,7 +242,7 @@ def main() -> None:
         _run_mode("direct_llm", run_direct_llm, output_dir / "direct_llm")
 
     if not results and failures:
-        failure_lines = [f"[{label}] {exc}" for label, exc in failures]
+        failure_lines = [_format_mode_failure(label, exc) for label, exc in failures]
         raise RuntimeError("All selected modes failed:\n" + "\n".join(failure_lines))
 
     print(f"Processed {image_path}")
@@ -225,7 +252,7 @@ def main() -> None:
             print(f"[{label}] {name}: {path}")
 
     for label, exc in failures:
-        print(f"[{label}] ERROR: {exc}", file=sys.stderr)
+        print(f"{_format_mode_failure(label, exc)}", file=sys.stderr)
 
 
 if __name__ == "__main__":

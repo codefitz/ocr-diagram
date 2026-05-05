@@ -9,8 +9,12 @@ from pathlib import Path
 from typing import Any
 
 SUPPORTED_NODE_TYPES = {
-    "server",
+    "host",
+    "router_switch",
+    "firewall",
+    "software",
     "database",
+    "server",
     "application",
     "network",
     "zone",
@@ -269,14 +273,18 @@ class TopologyNode:
     label: str
     node_type: str
     ip: str | None
+    description: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.node_id,
             "label": self.label,
             "type": self.node_type,
             "ip": self.ip,
         }
+        if self.description:
+            payload["description"] = self.description
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

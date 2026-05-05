@@ -17,7 +17,7 @@ The pipeline is intentionally staged and does not send raw images to the LLM:
 5. `diagram_parser/processing/validation.py`
    Deterministically validates the LLM response against the supported topology schema.
 6. `diagram_parser/output/writers.py`
-   Saves topology JSON, Mermaid, and uControl asset/tag body JSON output.
+   Saves topology JSON, Mermaid, and uControl model-create/retrieval JSON output.
 
 ## Install
 
@@ -39,6 +39,9 @@ supported by the current PaddlePaddle dependency stack.
 python3 main.py /path/to/diagram.png --model your-lmstudio-model
 python3 main.py /path/to/diagram.pdf --model your-lmstudio-model
 ```
+
+Pass an application/model name for uControl output with `--application-name`.
+When omitted, the application name defaults to `Application1`.
 
 The LLM client accepts:
 
@@ -74,9 +77,11 @@ python3 main.py /path/to/diagram.pdf --skip-llm
 
 By default, prompts include local uControl/BMC Discovery guidance from
 `diagram_parser/llm/rag/ucontrol_asset_tag_schema.md`, and outputs include
-`ucontrol_asset_tags.json`. This file contains JSON body-shaped asset records
-for `/api/asset/tag/create` plus provisional directional PK/FK relationship
-identity fields. It does not create or call the API.
+`ucontrol_model_create.json` and `ucontrol_retrieval_requests.json`.
+The model-create file is shaped as the POST body for
+`/api/umap/model/create`; the retrieval file contains GET request descriptors
+for `/api/asset/data/{definition}/{record-identifier}`. The tool does not
+create or call the API.
 
 Disable these independently when needed:
 
@@ -110,8 +115,10 @@ Outputs are written to the project-local `output/` directory by default, split b
 Each subdirectory may include:
 
 - `topology.json`
-- `ucontrol_asset_tags.json`
+- `ucontrol_model_create.json`
+- `ucontrol_retrieval_requests.json`
 - `topology.mmd`
+- `topology.svg` when Mermaid CLI (`mmdc`) is available
 - `structured_candidates.json`
 - `ocr_spans.json`
 - `llm_debug.json`
@@ -136,5 +143,4 @@ Illustrative example assets are in [`examples/`](/Volumes/Hub/Code/GitHub/ocr-di
 
 - Input sketch: [`simple_topology.svg`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/simple_topology.svg)
 - Expected JSON: [`expected_topology.json`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_topology.json)
-- Expected uControl asset/tag JSON: [`expected_ucontrol_asset_tags.json`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_ucontrol_asset_tags.json)
 - Expected Mermaid: [`expected_topology.mmd`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_topology.mmd)

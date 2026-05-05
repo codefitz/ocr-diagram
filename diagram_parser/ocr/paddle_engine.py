@@ -53,14 +53,27 @@ def _load_pdfium() -> Any:
 def load_document_pages(source_path: Path, config: OCRConfig) -> list[DocumentPage]:
     """Load raster images directly or render PDF pages to raster images."""
 
+    if not source_path.exists():
+        raise FileNotFoundError(f"Input file does not exist: {source_path}")
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Input path is not a file: {source_path}")
+
     suffix = source_path.suffix.lower()
     if suffix == ".pdf":
         pdfium = _load_pdfium()
-        document = pdfium.PdfDocument(str(source_path))
+        try:
+            document = pdfium.PdfDocument(str(source_path))
+        except Exception as exc:
+            raise RuntimeError(f"Unable to open PDF input: {source_path}") from exc
         pages: list[DocumentPage] = []
         page_limit = min(len(document), config.max_pages) if config.max_pages is not None else len(document)
         for page_index in range(page_limit):
-            rendered = document[page_index].render(scale=config.pdf_render_scale).to_numpy()
+            try:
+                rendered = document[page_index].render(scale=config.pdf_render_scale).to_numpy()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Unable to render PDF page {page_index + 1} from {source_path}"
+                ) from exc
             height, width = rendered.shape[:2]
             pages.append(
                 DocumentPage(
