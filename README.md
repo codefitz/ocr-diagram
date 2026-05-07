@@ -278,7 +278,7 @@ curl -sS -X POST "$UCONTROL_BASE/api/asset/create" \
   --data '{
     "asset_kind": "Host",
     "fields": {
-      "name": "BDHW8KW3"
+      "name": "ABCD12PD"
     }
   }'
 ```
