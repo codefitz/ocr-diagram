@@ -139,8 +139,285 @@ python3 main.py /path/to/diagram.pdf \
 
 ## Example
 
-Illustrative example assets are in [`examples/`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples):
+Illustrative example assets are in [`examples/`](../ocr-diagram/examples):
 
-- Input sketch: [`simple_topology.svg`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/simple_topology.svg)
-- Expected JSON: [`expected_topology.json`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_topology.json)
-- Expected Mermaid: [`expected_topology.mmd`](/Volumes/Hub/Code/GitHub/ocr-diagram/examples/expected_topology.mmd)
+- Input sketch: [`simple_topology.svg`](../ocr-diagram/examples/simple_topology.svg)
+- Expected JSON: [`expected_topology.json`](../ocr-diagram/examples/expected_topology.json)
+- Expected Mermaid: [`expected_topology.mmd`](../ocr-diagram/examples/expected_topology.mmd)
+
+# uControl uMap import guide
+
+The pipeline writes two uControl-facing files when `--no-ucontrol-asset-tags`
+is not used:
+
+- `output/<mode>/ucontrol_model_create.json`: application/model metadata plus
+  detected nodes and relationships.
+- `output/<mode>/ucontrol_retrieval_requests.json`: per-node asset lookup
+  descriptors such as `/api/asset/data/Host/name=ABCD12PD`.
+
+The current uMap API docs show model creation as query-parameter based. Treat
+`ucontrol_model_create.json` as the source of values for the create call, then
+use the detected host names and CI definitions to populate the model.
+
+The examples below assume:
+
+```bash
+export UCONTROL_BASE="https://your-ucontrol-host/uControl"
+export COOKIE="JSESSIONID=...; serverTime=...; sessionExpiry=..."
+```
+
+## 1. Generate the uControl payloads
+
+```bash
+python3 main.py /path/to/diagram.pdf \
+  --application-name "APP NAME" \
+  --model your-lmstudio-model
+```
+
+Use `output/pipeline/ucontrol_model_create.json` unless you ran
+`--mode direct-llm` or `--mode both`.
+
+## 2. Find or create the uMap model
+
+If the model may already exist, check by name first:
+
+```bash
+curl -sS "$UCONTROL_BASE/api/umap/model/details?name=APP%20NAME" \
+  -b "$COOKIE"
+```
+
+The details response uses `data[0].uMapModelID`. If it returns the correct
+model, keep that value as `uMapId` and skip creation.
+
+To create a new model, call `/api/umap/model/create` with values from
+`ucontrol_model_create.json`. URL-encode values that contain spaces.
+
+```bash
+curl -sS -X POST "$UCONTROL_BASE/api/umap/model/create\
+?name=Name\
+&description=Description\
+&appID=APPID\
+&modellingType=Standard\
+&applicationType=Application%20Service\
+  -b "$COOKIE"
+```
+
+Expected response shape:
+
+```json
+{
+	"status_code": 201,
+	"message": "Call processed without issue",
+	"ok": true,
+	"data": [
+		{
+			"uMapModelID": 67
+		}
+	],
+	"dataItem": null
+}
+```
+
+Save `data[0].uMapModelID`; the populate API calls this value `uMapId`.
+
+For a metadata update to an existing model, the available docs show targeted
+model APIs rather than a single full update endpoint. For example, rename the
+model with:
+
+```bash
+curl -sS -X POST "$UCONTROL_BASE/api/umap/model/rename?id=588&name=New%20Model%20Name" \
+  -b "$COOKIE"
+```
+
+## 3. Confirm IRE fields for the CI type
+
+Before linking existing hosts, retrieve the IRE rules for the CI type you are
+adding. For hosts:
+
+```bash
+curl -sS "$UCONTROL_BASE/api/umap/ire/data?kind=Host" -b "$COOKIE"
+```
+
+The captured API output for `BusinessApplicationInstance` returns rules such as
+`name` and `name,version`; the uMap PDF example for `Host` shows `name` and
+`name,serial`. Use the highest-priority rule for which this repo has values.
+For OCR-extracted hosts that usually means `name`.
+
+## 4. Optionally verify the existing assets
+
+`ucontrol_retrieval_requests.json` contains lookup endpoints for each detected
+asset. Example host lookup:
+
+```bash
+curl -sS "$UCONTROL_BASE/api/asset/data/Host/name=ABCD12PD" -b "$COOKIE"
+```
+
+Use this as a pre-flight check that the existing host can be found by the same
+IRE field you will send to `/api/umap/populate/umap`. Depending on the asset
+API response, the asset identifier may appear as `record_identifier`. After a
+host is linked to the uMap model, `/api/umap/model/ci/list` returns the model
+CI identifier as `ciId`.
+
+## 5. Create a Host asset when it does not already exist
+
+If the host lookup does not return an existing asset, create it with the uAsset
+API before populating the uMap model. The uAsset docs show:
+
+- Endpoint: `POST /api/asset/create`
+- Content type: `application/json`
+- Required body fields: `asset_kind` and `fields`
+- Minimum `fields`: the IRE fields for that asset kind, for example `name` for
+  a Host when using the `name` IRE rule
+
+Minimal Host creation:
+
+```bash
+curl -sS -X POST "$UCONTROL_BASE/api/asset/create" \
+  -H "Content-Type: application/json" \
+  -b "$COOKIE" \
+  --data '{
+    "asset_kind": "Host",
+    "fields": {
+      "name": "BDHW8KW3"
+    }
+  }'
+```
+
+Expected response shape:
+
+```json
+{
+  "status_code": 201,
+  "message": "Call processed without issue",
+  "ok": true,
+  "data": [
+    {
+      "record_identifier": 47038
+    }
+  ],
+  "dataItem": null
+}
+```
+
+Save `data[0].record_identifier` if later asset-level updates are needed.
+Then re-run the lookup to confirm the Host is retrievable by name:
+
+```bash
+curl -sS "$UCONTROL_BASE/api/asset/data/Host/name=ABCD12PD" -b "$COOKIE"
+```
+
+Optional fields can be added at creation time if you have them:
+
+```bash
+curl -sS -X POST "$UCONTROL_BASE/api/asset/create" \
+  -H "Content-Type: application/json" \
+  -b "$COOKIE" \
+  --data '{
+    "asset_kind": "Host",
+    "fields": {
+      "name": "ABCD12PD",
+      "short_name": "ABCD12PD",
+      "description": "Host detected from APP NAME"
+    },
+    "location": {
+      "locationValue": "London - London, City of - GB"
+    },
+    "business_unit": {
+      "businessUnitValue": "HR"
+    },
+    "tag_fields": [
+      {
+        "source": "ocr-diagram"
+      }
+    ]
+  }'
+```
+
+If the Host IRE rule includes multiple fields, include all required values under
+`fields`. For example, if `/api/umap/ire/data?kind=Host` returns `name,serial`
+as the rule you intend to use:
+
+```json
+{
+  "asset_kind": "Host",
+  "fields": {
+    "name": "ABCD12PD",
+    "serial": "SERIAL-12345"
+  }
+}
+```
+
+## 6. Add existing hosts to the model
+
+Use `/api/umap/populate/umap` with one item per host. The docs show
+`Content-Type: text/plain` with a JSON string body.
+
+```bash
+curl -sS -X POST "$UCONTROL_BASE/api/umap/populate/umap" \
+  -H "Content-Type: text/plain" \
+  -b "$COOKIE" \
+  --data '{
+    "data": [
+      {
+        "ciType": "Host",
+        "uMapId": "588",
+        "environmentId": "1",
+        "name": "ABCD12PD"
+      },
+      {
+        "ciType": "Host",
+        "uMapId": "588",
+        "environmentId": "1",
+        "name": "ABCD12PD"
+      },
+      {
+        "ciType": "Host",
+        "uMapId": "588",
+        "environmentId": "1",
+        "name": "ABCD12PD"
+      }
+    ]
+  }'
+```
+
+Field mapping:
+
+- `ciType`: uControl schema definition, for example `Host`, `NetworkDevice`,
+  `SoftwareInstance`, or `Database`.
+- `uMapId`: `uMapModelID` from create/details.
+- `environmentId`: from `/api/umap/environment/data`; `1` is `Not Set` in the
+  captured output.
+- IRE fields: name/value fields from `/api/umap/ire/data?kind=<ciType>`, for
+  example `"name": "BDHW8KW3"` for a host.
+
+## 7. Verify the model contents
+
+List the CIs now linked to the model:
+
+```bash
+curl -sS "$UCONTROL_BASE/api/umap/model/ci/list?uMapId=588&kind=Host" \
+  -b "$COOKIE"
+```
+
+The response includes records such as:
+
+```json
+{
+  "valid": true,
+  "cloud": false,
+  "environment": "Production",
+  "component": "Not Set",
+  "uMapId": 588,
+  "kind": "Host",
+  "name": "ABCD12PD",
+  "uMapName": "APP NAME",
+  "ciId": 306
+}
+```
+
+If a host was added incorrectly, unlink it by `ciId`:
+
+```bash
+curl -sS -X POST "$UCONTROL_BASE/api/umap/model/ci/unlink?ciIds=306&kind=Host" \
+  -b "$COOKIE"
+```

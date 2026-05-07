@@ -181,3 +181,5 @@ cython_debug/
 .cursorindexingignore
 /output
 .DS_Store
+/apis
+/docs
