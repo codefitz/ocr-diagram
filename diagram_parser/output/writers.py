@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,6 +12,36 @@ from urllib.parse import quote
 
 from diagram_parser.config import OutputConfig
 from diagram_parser.models import StructuredDiagram, TopologyGraph, TopologyNode
+
+
+MONTH_PATTERN = re.compile(
+    r"\b(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|"
+    r"aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b",
+    re.IGNORECASE,
+)
+HOSTNAME_LIKE_PATTERN = re.compile(r"^[A-Z]{2,}[A-Z0-9-]*\d[A-Z0-9-]*$")
+NOISE_LABEL_WORDS = {
+    "backup",
+    "bit",
+    "cpu",
+    "edition",
+    "f5",
+    "firewall",
+    "gb",
+    "ghz",
+    "ibm",
+    "internet",
+    "live",
+    "ram",
+    "router",
+    "server",
+    "servers",
+    "service pack",
+    "switch",
+    "vm",
+    "web servers",
+    "win2008",
+}
 
 
 def _escape_mermaid_label(value: str) -> str:
@@ -77,6 +108,102 @@ def _bmc_kind_for_node(node: TopologyNode) -> str:
 def _stable_guid(*parts: str) -> str:
     raw_guid = "|".join(part.strip() for part in parts if part.strip())
     return base64.b64encode(raw_guid.encode("utf-8")).decode("ascii")
+
+
+def _is_plausible_application_label(label: str) -> bool:
+    stripped = " ".join(label.split()).strip(" -_:")
+    if len(stripped) < 3 or len(stripped) > 80:
+        return False
+    lowered = stripped.lower()
+    if "://" in lowered or lowered.startswith(("http", "www.")):
+        return False
+    if MONTH_PATTERN.search(stripped) and any(char.isdigit() for char in stripped):
+        return False
+    if not any(char.isalpha() for char in stripped):
+        return False
+    if HOSTNAME_LIKE_PATTERN.fullmatch(stripped) and " " not in stripped:
+        return False
+    if any(word in lowered for word in NOISE_LABEL_WORDS):
+        return False
+    return True
+
+
+def _fallback_application_name(topology: TopologyGraph) -> str:
+    preferred_types = {"application", "software"}
+    for node in topology.nodes:
+        label = " ".join(node.label.split())
+        if node.node_type in preferred_types and _is_plausible_application_label(label):
+            return label
+    for node in topology.nodes:
+        label = " ".join(node.label.split())
+        if node.node_type not in {"host", "server"} and _is_plausible_application_label(label):
+            return label
+    for node in topology.nodes:
+        label = " ".join(node.label.split())
+        if _is_plausible_application_label(label):
+            return label
+    return "Application"
+
+
+def infer_ucontrol_application_name(
+    topology: TopologyGraph,
+    structured_diagram: StructuredDiagram | None = None,
+) -> str:
+    """Infer an application name from extracted labels, preferring top/central text."""
+
+    if structured_diagram is None or not structured_diagram.ocr_spans:
+        return _fallback_application_name(topology)
+
+    topology_labels = {node.label.strip().lower(): node for node in topology.nodes}
+    page_heights = {page.page_id: page.height for page in structured_diagram.pages}
+    page_widths = {page.page_id: page.width for page in structured_diagram.pages}
+    candidates: list[tuple[float, str]] = []
+
+    for span in structured_diagram.ocr_spans:
+        label = " ".join(span.text.split())
+        if not _is_plausible_application_label(label):
+            continue
+
+        page_height = page_heights.get(span.page_id) or 1
+        page_width = page_widths.get(span.page_id) or 1
+        top_ratio = span.bbox.top / page_height
+        center_distance = abs(span.center.x - (page_width / 2)) / page_width
+        score = span.confidence * 20
+        score += max(0.0, 80.0 * (1.0 - top_ratio))
+        score += max(0.0, 20.0 * (1.0 - center_distance))
+        score += min(span.bbox.width / 10.0, 20.0)
+
+        matching_node = topology_labels.get(label.lower())
+        if matching_node is not None:
+            score += 100.0
+            if matching_node.node_type in {"application", "software"}:
+                score += 50.0
+        if any(word in label.lower() for word in ("app", "application", "service", "web")):
+            score += 20.0
+
+        candidates.append((score, label))
+
+    if not candidates:
+        return _fallback_application_name(topology)
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def resolve_ucontrol_application_identity(
+    topology: TopologyGraph,
+    config: OutputConfig,
+    structured_diagram: StructuredDiagram | None = None,
+) -> tuple[str, str]:
+    application_name = (
+        config.application_name.strip()
+        if config.application_name and config.application_name.strip()
+        else infer_ucontrol_application_name(topology, structured_diagram)
+    )
+    app_id = (
+        config.app_id.strip()
+        if config.app_id and config.app_id.strip()
+        else f"{application_name}01"
+    )
+    return application_name, app_id
 
 
 def _build_ucontrol_asset(node: TopologyNode) -> dict[str, object]:
@@ -152,61 +279,66 @@ def build_ucontrol_asset_tags(topology: TopologyGraph) -> dict[str, object]:
     }
 
 
-def build_ucontrol_model_create_body(
-    topology: TopologyGraph,
+def build_ucontrol_model_create_request(
     application_name: str,
+    app_id: str,
 ) -> dict[str, object]:
-    """Build the JSON body for uControl model creation."""
+    """Build a request descriptor for uControl model creation query params."""
 
-    assets_by_node_id = {
-        node.node_id: _build_ucontrol_asset(node)
-        for node in topology.nodes
-        if node.label.strip()
-    }
-    relationships: list[dict[str, object]] = []
-
-    for edge in topology.edges:
-        from_asset = assets_by_node_id.get(edge.from_node_id)
-        to_asset = assets_by_node_id.get(edge.to_node_id)
-        if from_asset is None or to_asset is None:
-            continue
-        relationship_label = "connects_to"
-        if edge.protocol or edge.port:
-            relationship_label = "communicates_with"
-        relationships.append(
+    description = f"{application_name} application"
+    params = [
+        {"name": "name", "value": application_name},
+        {"name": "description", "value": description},
+        {"name": "appID", "value": app_id},
+        {"name": "modellingType", "value": "Standard"},
+        {"name": "applicationType", "value": "Application Service"},
+    ]
+    query_string = "&".join(
+        f"{quote(param['name'], safe='')}={quote(param['value'], safe='')}"
+        for param in params
+    )
+    endpoint = "/api/umap/model/create"
+    return {
+        "method": "POST",
+        "endpoint": endpoint,
+        "query_string": query_string,
+        "url": f"{endpoint}?{query_string}",
+        "insomnia_url": f"{{{{UCONTROL_BASE}}}}{endpoint}?{query_string}",
+        "params": params,
+        "headers": [
             {
-                "from": from_asset["name"],
-                "from_definition": from_asset["kind"],
-                "to": to_asset["name"],
-                "to_definition": to_asset["kind"],
-                "relationship": relationship_label,
-                "protocol": edge.protocol,
-                "port": edge.port,
-                "directional": edge.directional,
+                "name": "Cookie",
+                "value": "{{COOKIE}}",
+            }
+        ],
+        "curl": (
+            'curl -sS -X POST "{{UCONTROL_BASE}}'
+            f'{endpoint}?{query_string}" -b "{{{{COOKIE}}}}"'
+        ),
+    }
+
+
+def build_ucontrol_populate_umap_body(
+    topology: TopologyGraph,
+    u_map_id_placeholder: str = "<uMapId>",
+) -> dict[str, object]:
+    """Build the JSON body for mapping extracted Hosts to a uMap model."""
+
+    data: list[dict[str, str]] = []
+    seen_hosts: set[str] = set()
+    for node in topology.nodes:
+        name = " ".join(node.label.split())
+        if not name or name in seen_hosts or _bmc_kind_for_node(node) != "Host":
+            continue
+        seen_hosts.add(name)
+        data.append(
+            {
+                "ciType": "Host",
+                "uMapId": u_map_id_placeholder,
+                "name": name,
             }
         )
-
-    return {
-        "name": application_name,
-        "description": application_name,
-        "appID": application_name,
-        "modellingType": "Standard",
-        "applicationType": "Application Service",
-        "teamID": 7,
-        "reviewSettingID": 1,
-        "linkToServiceID": 23,
-        "nodes": [
-            {
-                "name": asset["name"],
-                "type": asset["kind"],
-                "definition": asset["kind"],
-                "record_identifier": asset["record_identifier"],
-                "description": asset["description"],
-            }
-            for asset in assets_by_node_id.values()
-        ],
-        "relationships": relationships,
-    }
+    return {"data": data}
 
 
 def build_ucontrol_retrieval_requests(
@@ -221,16 +353,18 @@ def build_ucontrol_retrieval_requests(
         if not name:
             continue
         definition = _bmc_kind_for_node(node)
-        record_identifier = f"name={name}"
-        encoded_record_identifier = f"name={quote(name, safe='')}"
+        filter_expression = f"asset.nameEQUALS'{name}'"
         requests.append(
             {
                 "node_name": name,
                 "node_type": node.node_type,
                 "definition": definition,
-                "record_identifier": record_identifier,
+                "filter": filter_expression,
                 "method": "GET",
-                "endpoint": f"/api/asset/data/{quote(definition, safe='')}/{encoded_record_identifier}",
+                "endpoint": (
+                    f"/api/asset/data/{quote(definition, safe='')}"
+                    f"?filter={quote(filter_expression, safe='')}"
+                ),
             }
         )
 
@@ -275,20 +409,35 @@ def save_outputs(
         output_paths["mermaid_svg"] = rendered_mermaid_path
 
     if config.save_ucontrol_asset_tags:
+        application_name, app_id = resolve_ucontrol_application_identity(
+            topology=topology,
+            config=config,
+            structured_diagram=structured_diagram,
+        )
         ucontrol_model_create_path = output_dir / "ucontrol_model_create.json"
         ucontrol_model_create_path.write_text(
             json.dumps(
-                build_ucontrol_model_create_body(topology, config.application_name),
+                build_ucontrol_model_create_request(application_name, app_id),
                 indent=config.json_indent,
             ) + "\n",
             encoding="utf-8",
         )
         output_paths["ucontrol_model_create"] = ucontrol_model_create_path
 
+        ucontrol_populate_path = output_dir / "ucontrol_populate_umap.json"
+        ucontrol_populate_path.write_text(
+            json.dumps(
+                build_ucontrol_populate_umap_body(topology),
+                indent=config.json_indent,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        output_paths["ucontrol_populate_umap"] = ucontrol_populate_path
+
         ucontrol_retrieval_path = output_dir / "ucontrol_retrieval_requests.json"
         ucontrol_retrieval_path.write_text(
             json.dumps(
-                build_ucontrol_retrieval_requests(topology, config.application_name),
+                build_ucontrol_retrieval_requests(topology, application_name),
                 indent=config.json_indent,
             ) + "\n",
             encoding="utf-8",

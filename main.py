@@ -31,7 +31,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--application-name",
         type=str,
         default=None,
-        help="Application/model name for uControl output. Defaults to Application1.",
+        help=(
+            "Application/model name for uControl output. "
+            "When omitted, the pipeline attempts to infer it from extracted text."
+        ),
+    )
+    parser.add_argument(
+        "--app-id",
+        type=str,
+        default=None,
+        help="Application ID for uControl model-create output. Defaults to <application-name>01.",
     )
     parser.add_argument(
         "--model",
@@ -74,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-ucontrol-asset-tags",
         action="store_true",
-        help="Do not write uControl model-create and retrieval JSON outputs.",
+        help="Do not write uControl model-create, populate, or retrieval JSON outputs.",
     )
     parser.add_argument(
         "--allow-llm-fallback",
@@ -190,6 +199,8 @@ def main() -> None:
         config.output.save_ucontrol_asset_tags = False
     if args.application_name:
         config.output.application_name = args.application_name
+    if args.app_id:
+        config.output.app_id = args.app_id
     if args.allow_llm_fallback:
         config.llm.allow_fallback_on_error = True
     if args.model:

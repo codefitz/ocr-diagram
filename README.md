@@ -41,7 +41,9 @@ python3 main.py /path/to/diagram.pdf --model your-lmstudio-model
 ```
 
 Pass an application/model name for uControl output with `--application-name`.
-When omitted, the application name defaults to `Application1`.
+When omitted, the pipeline attempts to infer the application name from extracted
+labels and their positions. Pass `--app-id` to set the uControl application ID;
+when omitted, it defaults to `<application-name>01`.
 
 The LLM client accepts:
 
@@ -77,11 +79,13 @@ python3 main.py /path/to/diagram.pdf --skip-llm
 
 By default, prompts include local uControl/BMC Discovery guidance from
 `diagram_parser/llm/rag/ucontrol_asset_tag_schema.md`, and outputs include
-`ucontrol_model_create.json` and `ucontrol_retrieval_requests.json`.
-The model-create file is shaped as the POST body for
-`/api/umap/model/create`; the retrieval file contains GET request descriptors
-for `/api/asset/data/{definition}/{record-identifier}`. The tool does not
-create or call the API.
+`ucontrol_model_create.json`, `ucontrol_populate_umap.json`, and
+`ucontrol_retrieval_requests.json`. The model-create file is a request
+descriptor for `/api/umap/model/create`, which takes query parameters rather
+than a JSON body; the populate file is shaped as the manual POST body for
+`/api/umap/populate/umap`; the retrieval file contains GET request descriptors
+for `/api/asset/data/{definition}` with a name filter. The tool does not create
+or call the API.
 
 Disable these independently when needed:
 
@@ -116,6 +120,7 @@ Each subdirectory may include:
 
 - `topology.json`
 - `ucontrol_model_create.json`
+- `ucontrol_populate_umap.json`
 - `ucontrol_retrieval_requests.json`
 - `topology.mmd`
 - `topology.svg` when Mermaid CLI (`mmdc`) is available
@@ -147,16 +152,18 @@ Illustrative example assets are in [`examples/`](../ocr-diagram/examples):
 
 # uControl uMap import guide
 
-The pipeline writes two uControl-facing files when `--no-ucontrol-asset-tags`
+The pipeline writes three uControl-facing files when `--no-ucontrol-asset-tags`
 is not used:
 
 - `output/<mode>/ucontrol_model_create.json`: application/model metadata plus
-  detected nodes and relationships.
+  copyable query strings and Params for manual model creation.
+- `output/<mode>/ucontrol_populate_umap.json`: Host mappings for manual
+  `/api/umap/populate/umap` testing.
 - `output/<mode>/ucontrol_retrieval_requests.json`: per-node asset lookup
-  descriptors such as `/api/asset/data/Host/name=ABCD12PD`.
+  descriptors such as `/api/asset/data/Host?filter=asset.nameEQUALS%27ABCD12PD%27`.
 
-The current uMap API docs show model creation as query-parameter based. Treat
-`ucontrol_model_create.json` as the source of values for the create call, then
+The current uMap API docs show model creation as query-parameter based. Use
+`ucontrol_model_create.json` for the create URL or for Params in Insomnia, then
 use the detected host names and CI definitions to populate the model.
 
 The examples below assume:
@@ -166,16 +173,85 @@ export UCONTROL_BASE="https://your-ucontrol-host/uControl"
 export COOKIE="JSESSIONID=...; serverTime=...; sessionExpiry=..."
 ```
 
+## Using Postman or Insomnia
+
+The curl examples translate directly into Postman or Insomnia requests:
+
+1. Create an environment with:
+   - `UCONTROL_BASE`: `https://your-ucontrol-host/uControl`
+   - `COOKIE`: `JSESSIONID=...; serverTime=...; sessionExpiry=...`
+   - Optional values such as `UMAP_ID`, `HOST_NAME`, and `ENVIRONMENT_ID`
+2. For every request, add a `Cookie` header:
+
+```text
+Cookie: {{COOKIE}}
+```
+
+3. Use query parameters in the client Params tab instead of hand-encoding the
+   full URL. Postman and Insomnia will encode spaces and special characters.
+4. For JSON body APIs, select `Body` -> `raw` -> `JSON` in Postman, or
+   `Body` -> `JSON` in Insomnia.
+5. For `/api/umap/populate/umap`, set the body to raw text or JSON text and set
+   this header exactly as shown in the docs:
+
+```text
+Content-Type: text/plain
+```
+
+Common request setup:
+
+| Purpose | Method | URL | Params | Body |
+| --- | --- | --- | --- | --- |
+| Find model | `GET` | `{{UCONTROL_BASE}}/api/umap/model/details` | `name=APP NAME` | none |
+| Create model | `POST` | `{{UCONTROL_BASE}}/api/umap/model/create` | `name`, `description`, `appID`, `modellingType`, `applicationType` | none |
+| Get Host IRE rules | `GET` | `{{UCONTROL_BASE}}/api/umap/ire/data` | `kind=Host` | none |
+| Check Host asset by name | `GET` | `{{UCONTROL_BASE}}/api/asset/data/Host` | `filter=asset.nameEQUALS'{{HOST_NAME}}'` | none |
+| Check Host asset by created ID | `GET` | `{{UCONTROL_BASE}}/api/asset/data/Host` | `filter=asset.record_identifierEQUALS{{HOST_RECORD_IDENTIFIER}}` | none |
+| Create Host asset | `POST` | `{{UCONTROL_BASE}}/api/asset/create` | none | JSON |
+| Populate uMap | `POST` | `{{UCONTROL_BASE}}/api/umap/populate/umap` | none | raw text JSON |
+| List model Hosts | `GET` | `{{UCONTROL_BASE}}/api/umap/model/ci/list` | `uMapId={{UMAP_ID}}`, `kind=Host` | none |
+| Unlink Host | `POST` | `{{UCONTROL_BASE}}/api/umap/model/ci/unlink` | `ciIds=306`, `kind=Host` | none |
+
+Example Postman/Insomnia body for creating a Host asset:
+
+```json
+{
+  "asset_kind": "Host",
+  "fields": {
+    "name": "{{HOST_NAME}}"
+  }
+}
+```
+
+Example Postman/Insomnia body for populating a uMap model:
+
+```json
+{
+  "data": [
+    {
+      "ciType": "Host",
+      "uMapId": "{{UMAP_ID}}",
+      "environmentId": "{{ENVIRONMENT_ID}}",
+      "name": "{{HOST_NAME}}"
+    }
+  ]
+}
+```
+
 ## 1. Generate the uControl payloads
 
 ```bash
 python3 main.py /path/to/diagram.pdf \
   --application-name "APP NAME" \
+  --app-id "APPID" \
   --model your-lmstudio-model
 ```
 
 Use `output/pipeline/ucontrol_model_create.json` unless you ran
-`--mode direct-llm` or `--mode both`.
+`--mode direct-llm` or `--mode both`. If `--application-name` is omitted, the
+pipeline attempts to infer it from prominent extracted labels near the top of
+the diagram, with application/software labels preferred. If `--app-id` is
+omitted, the generated `appID` defaults to `<application-name>01`.
 
 ## 2. Find or create the uMap model
 
@@ -189,8 +265,49 @@ curl -sS "$UCONTROL_BASE/api/umap/model/details?name=APP%20NAME" \
 The details response uses `data[0].uMapModelID`. If it returns the correct
 model, keep that value as `uMapId` and skip creation.
 
-To create a new model, call `/api/umap/model/create` with values from
-`ucontrol_model_create.json`. URL-encode values that contain spaces.
+The generated `ucontrol_model_create.json` is a manual request descriptor, not
+a JSON body. It contains copyable URL strings and a Params-friendly list:
+
+```json
+{
+  "method": "POST",
+  "endpoint": "/api/umap/model/create",
+  "query_string": "name=APP%20NAME&description=APP%20NAME%20application&appID=APPID&modellingType=Standard&applicationType=Application%20Service",
+  "url": "/api/umap/model/create?name=APP%20NAME&description=APP%20NAME%20application&appID=APPID&modellingType=Standard&applicationType=Application%20Service",
+  "insomnia_url": "{{UCONTROL_BASE}}/api/umap/model/create?name=APP%20NAME&description=APP%20NAME%20application&appID=APPID&modellingType=Standard&applicationType=Application%20Service",
+  "params": [
+    {
+      "name": "name",
+      "value": "APP NAME"
+    },
+    {
+      "name": "description",
+      "value": "APP NAME application"
+    },
+    {
+      "name": "appID",
+      "value": "APPID"
+    },
+    {
+      "name": "modellingType",
+      "value": "Standard"
+    },
+    {
+      "name": "applicationType",
+      "value": "Application Service"
+    }
+  ]
+}
+```
+
+In Insomnia, create a `POST` request using `insomnia_url`, or use
+`{{UCONTROL_BASE}}/api/umap/model/create` as the URL and copy the generated
+`params` entries into the Query tab. Do not put this payload in the request
+body.
+
+To create a new model with curl, use the generated `url` or `curl` string.
+The mandatory parameters are `name`, `description`, `appID`,
+`modellingType=Standard`, and `applicationType=Application Service`.
 
 ```bash
 curl -sS -X POST "$UCONTROL_BASE/api/umap/model/create\
@@ -198,7 +315,7 @@ curl -sS -X POST "$UCONTROL_BASE/api/umap/model/create\
 &description=Description\
 &appID=APPID\
 &modellingType=Standard\
-&applicationType=Application%20Service\
+&applicationType=Application%20Service" \
   -b "$COOKIE"
 ```
 
@@ -246,17 +363,33 @@ For OCR-extracted hosts that usually means `name`.
 ## 4. Optionally verify the existing assets
 
 `ucontrol_retrieval_requests.json` contains lookup endpoints for each detected
-asset. Example host lookup:
+asset. To look up a Host by name, use the asset API `filter` query parameter:
 
 ```bash
-curl -sS "$UCONTROL_BASE/api/asset/data/Host/name=ABCD12PD" -b "$COOKIE"
+curl -sS --get "$UCONTROL_BASE/api/asset/data/Host" \
+  --data-urlencode "filter=asset.nameEQUALS'ABCD12PD'" \
+  -b "$COOKIE"
 ```
 
 Use this as a pre-flight check that the existing host can be found by the same
-IRE field you will send to `/api/umap/populate/umap`. Depending on the asset
-API response, the asset identifier may appear as `record_identifier`. After a
-host is linked to the uMap model, `/api/umap/model/ci/list` returns the model
-CI identifier as `ciId`.
+IRE field you will send to `/api/umap/populate/umap`. Do not use
+`/api/asset/data/Host/name=ABCD12PD` for name lookup; the path value is a
+`record_identifier`, and some uControl instances treat an invalid path value as
+a broad Host list.
+
+If you already have the numeric `record_identifier` from `/api/asset/create`,
+use a filtered list query to confirm it. On some uControl instances the
+documented `/api/asset/data/Host/{record_identifier}` path still returns a broad
+list, so prefer the filter form:
+
+```bash
+curl -sS --get "$UCONTROL_BASE/api/asset/data/Host" \
+  --data-urlencode "filter=asset.record_identifierEQUALS1395" \
+  -b "$COOKIE"
+```
+
+After a host is linked to the uMap model, `/api/umap/model/ci/list` returns the
+model CI identifier as `ciId`.
 
 ## 5. Create a Host asset when it does not already exist
 
@@ -299,11 +432,22 @@ Expected response shape:
 }
 ```
 
-Save `data[0].record_identifier` if later asset-level updates are needed.
-Then re-run the lookup to confirm the Host is retrievable by name:
+Save `data[0].record_identifier` if later asset-level updates are needed. The
+create response is the primary confirmation that the asset was created. For the
+example above, verify the created ID with:
 
 ```bash
-curl -sS "$UCONTROL_BASE/api/asset/data/Host/name=ABCD12PD" -b "$COOKIE"
+curl -sS --get "$UCONTROL_BASE/api/asset/data/Host" \
+  --data-urlencode "filter=asset.record_identifierEQUALS47038" \
+  -b "$COOKIE"
+```
+
+Then re-run the filtered lookup to confirm the Host is retrievable by name:
+
+```bash
+curl -sS --get "$UCONTROL_BASE/api/asset/data/Host" \
+  --data-urlencode "filter=asset.nameEQUALS'ABCD12PD'" \
+  -b "$COOKIE"
 ```
 
 Optional fields can be added at creation time if you have them:
@@ -348,6 +492,21 @@ as the rule you intend to use:
 ```
 
 ## 6. Add existing hosts to the model
+
+The generated `ucontrol_populate_umap.json` contains one item per extracted
+Host, with a placeholder `uMapId` to replace after model creation or lookup:
+
+```json
+{
+  "data": [
+    {
+      "ciType": "Host",
+      "uMapId": "<uMapId>",
+      "name": "ABCD12PD"
+    }
+  ]
+}
+```
 
 Use `/api/umap/populate/umap` with one item per host. The docs show
 `Content-Type: text/plain` with a JSON string body.
