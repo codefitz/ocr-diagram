@@ -91,8 +91,9 @@ def _extract_hostname_tokens(label: str) -> list[str]:
             continue
         if not any(char.isdigit() for char in token):
             continue
-        if token not in hostnames:
-            hostnames.append(token)
+        normalized_token = token.lower()
+        if normalized_token not in hostnames:
+            hostnames.append(normalized_token)
     return hostnames
 
 
