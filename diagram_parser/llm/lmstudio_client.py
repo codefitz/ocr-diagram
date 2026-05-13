@@ -67,6 +67,7 @@ def _topology_json_schema_response_format() -> dict[str, Any]:
             "schema": {
                 "type": "object",
                 "properties": {
+                    "application_name": {"type": ["string", "null"]},
                     "nodes": {
                         "type": "array",
                         "items": {
@@ -100,7 +101,7 @@ def _topology_json_schema_response_format() -> dict[str, Any]:
                         },
                     },
                 },
-                "required": ["nodes", "edges"],
+                "required": ["application_name", "nodes", "edges"],
                 "additionalProperties": False,
             },
         },
@@ -213,16 +214,18 @@ def _build_prompt(structured_diagram: StructuredDiagram, config: LLMConfig) -> l
         "Rules:\n"
         "1. Return valid JSON only. No markdown.\n"
         "2. Use only evidence from the provided OCR spans, grouped candidate nodes, and candidate connections.\n"
-        "3. Extract only named infrastructure nodes: hosts, routers/switches, firewalls, software, and databases.\n"
+        "3. Extract named hosts, routers/switches, firewalls, software, databases, and any visible application/service title.\n"
         "4. The node label must be the asset name, not the role, asset type, OS, CPU, RAM, or description text.\n"
         "5. For host groups with multiple hostnames, create one host node per hostname.\n"
         "6. For labels like `VM BDHW8KW6 Data Store Server`, use `BDHW8KW6` as the host label and `host` as the type.\n"
-        "7. Ignore any node that does not have an identifiable visible name.\n"
-        "8. Do not hallucinate labels, IPs, protocols, ports, or edge directions.\n"
-        "9. If a value is unknown, use null.\n"
-        "10. Keep node types within the allowed enum.\n"
-        "11. Preserve connections only when the candidate connection list supports them.\n"
-        "12. Prefer candidate node IDs where possible so edges can reference stable IDs.\n"
+        "7. For visible DB/database role labels with host-like names, use the host-like name as a `host` unless a database technology name is visible.\n"
+        "8. If the diagram has a prominent visible application/service title, set `application_name` to that title and include it as a `software` node.\n"
+        "9. Ignore any node that does not have an identifiable visible name.\n"
+        "10. Do not hallucinate labels, IPs, protocols, ports, or edge directions.\n"
+        "11. If a value is unknown, use null.\n"
+        "12. Keep node types within the allowed enum.\n"
+        "13. Preserve connections only when the candidate connection list supports them.\n"
+        "14. Prefer candidate node IDs where possible so edges can reference stable IDs.\n"
         f"{ucontrol_guidance}\n"
         f"Schema:\n{json.dumps(schema, indent=2)}"
     )
@@ -258,20 +261,23 @@ def _build_direct_llm_prompt(image_path: str, pages: list[DocumentPage], config:
         f"{ucontrol_guidance}"
         "Schema:\n"
         "{\n"
+        '  "application_name": "string|null",\n'
         f'  "nodes": [{{"id":"string","label":"string","type":"{NODE_TYPE_SCHEMA}","ip":"string|null"}}],\n'
         '  "edges": [{"from":"string","to":"string","protocol":"string|null","port":"string|null","directional":true}]\n'
         "}\n"
         "Rules:\n"
         "1. Use only information visible in the diagram images.\n"
-        "2. Extract only named infrastructure nodes: hosts, routers/switches, firewalls, software, and databases.\n"
+        "2. Extract named hosts, routers/switches, firewalls, software, databases, and any visible application/service title.\n"
         "3. The node label must be the asset name, not the role, asset type, OS, CPU, RAM, or description text.\n"
         "4. For host groups with multiple hostnames, create one host node per hostname.\n"
         "5. For labels like `VM BDHW8KW6 Data Store Server`, use `BDHW8KW6` as the host label and `host` as the type.\n"
-        "6. Ignore any node that does not have an identifiable visible name.\n"
-        "7. Copy labels faithfully but you may normalize obvious OCR-free reading issues from the image itself.\n"
-        "8. Use null for unknown IPs, protocols, ports, or directions.\n"
-        "9. Do not invent hidden infrastructure.\n"
-        "10. Prefer concise node labels from the diagram, not long concatenations.\n"
+        "6. For visible DB/database role labels with host-like names, use the host-like name as a `host` unless a database technology name is visible.\n"
+        "7. If the diagram has a prominent visible application/service title, set `application_name` to that title and include it as a `software` node.\n"
+        "8. Ignore any node that does not have an identifiable visible name.\n"
+        "9. Copy labels faithfully but you may normalize obvious OCR-free reading issues from the image itself.\n"
+        "10. Use null for unknown IPs, protocols, ports, or directions.\n"
+        "11. Do not invent hidden infrastructure.\n"
+        "12. Prefer concise node labels from the diagram, not long concatenations.\n"
         f"Source file: {image_path}\n"
         f"Rendered pages included: {page_refs}\n"
     )
@@ -300,10 +306,11 @@ def _build_single_message_retry_prompt(structured_diagram: StructuredDiagram, co
         f"{ucontrol_guidance}"
         "Schema:\n"
         "{\n"
+        '  "application_name": "string|null",\n'
         f'  "nodes": [{{"id":"string","label":"string","type":"{NODE_TYPE_SCHEMA}","ip":"string|null"}}],\n'
         '  "edges": [{"from":"string","to":"string","protocol":"string|null","port":"string|null","directional":true}]\n'
         "}\n"
-        "Use only the supplied evidence. Use asset names as labels, split host groups into one host per hostname, ignore unnamed nodes, use null for unknown fields, and do not hallucinate.\n"
+        "Use only the supplied evidence. Use asset names as labels, set application_name from any prominent application/service title and include that title as a software node, split host groups into one host per hostname, treat DB/database role labels with host-like names as hosts unless a database technology name is visible, ignore unnamed nodes, use null for unknown fields, and do not hallucinate.\n"
         f"Evidence:\n{evidence}"
     )
     return [

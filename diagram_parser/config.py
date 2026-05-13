@@ -12,6 +12,8 @@ class OCRConfig:
     use_angle_cls: bool = True
     disable_model_source_check: bool = True
     pdf_render_scale: float = 1.25
+    image_padding_pixels: int = 40
+    image_scale: float = 1.0
     max_pages: int | None = None
     use_cache: bool = True
     refresh_cache: bool = False

@@ -172,6 +172,7 @@ class CandidateNode:
     text_span_ids: tuple[str, ...]
     texts: tuple[str, ...]
     type_hint: str
+    type_reason: str | None = None
 
     @property
     def center(self) -> Point:
@@ -187,6 +188,7 @@ class CandidateNode:
             "text_span_ids": list(self.text_span_ids),
             "texts": list(self.texts),
             "type_hint": self.type_hint,
+            "type_reason": self.type_reason,
         }
 
 

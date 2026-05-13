@@ -13,6 +13,13 @@ from diagram_parser.output import build_mermaid, save_llm_debug, save_outputs
 from diagram_parser.processing import detect_connections, group_text_into_nodes, validate_topology
 
 
+def _application_name_from_payload(raw_payload: dict[str, object]) -> str | None:
+    value = raw_payload.get("application_name")
+    if isinstance(value, str) and value.strip():
+        return " ".join(value.split())
+    return None
+
+
 def run_pipeline(image_path: Path, output_dir: Path, config: PipelineConfig) -> tuple[TopologyGraph, dict[str, Path]]:
     """Run all pipeline stages in sequence."""
 
@@ -93,6 +100,7 @@ def run_pipeline(image_path: Path, output_dir: Path, config: PipelineConfig) -> 
         config=config.output,
         structured_diagram=structured_diagram,
         llm_artifacts=llm_artifacts,
+        application_name_override=_application_name_from_payload(raw_topology),
     )
     if config.ocr.use_cache:
         output_paths["ocr_cache"] = ocr_cache_path
@@ -129,5 +137,6 @@ def run_direct_llm(image_path: Path, output_dir: Path, config: PipelineConfig) -
         config=config.output,
         structured_diagram=None,
         llm_artifacts=artifacts.to_dict(),
+        application_name_override=_application_name_from_payload(raw_topology),
     )
     return topology, output_paths

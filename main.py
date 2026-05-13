@@ -109,6 +109,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rasterization scale for PDF pages before OCR. Lower values use less memory.",
     )
     parser.add_argument(
+        "--ocr-image-padding",
+        type=int,
+        default=None,
+        help="White border, in pixels, added around raster pages before OCR.",
+    )
+    parser.add_argument(
+        "--ocr-image-scale",
+        type=float,
+        default=None,
+        help="Scale factor applied to raster pages before OCR after padding.",
+    )
+    parser.add_argument(
         "--max-pages",
         type=int,
         default=None,
@@ -215,6 +227,10 @@ def main() -> None:
         config.connections.node_endpoint_distance = args.endpoint_distance
     if args.pdf_scale is not None:
         config.ocr.pdf_render_scale = args.pdf_scale
+    if args.ocr_image_padding is not None:
+        config.ocr.image_padding_pixels = args.ocr_image_padding
+    if args.ocr_image_scale is not None:
+        config.ocr.image_scale = args.ocr_image_scale
     if args.max_pages is not None:
         config.ocr.max_pages = args.max_pages
     if args.no_ocr_cache:

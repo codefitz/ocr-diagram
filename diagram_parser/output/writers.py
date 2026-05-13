@@ -192,12 +192,14 @@ def resolve_ucontrol_application_identity(
     topology: TopologyGraph,
     config: OutputConfig,
     structured_diagram: StructuredDiagram | None = None,
+    application_name_override: str | None = None,
 ) -> tuple[str, str]:
-    application_name = (
-        config.application_name.strip()
-        if config.application_name and config.application_name.strip()
-        else infer_ucontrol_application_name(topology, structured_diagram)
-    )
+    if config.application_name and config.application_name.strip():
+        application_name = config.application_name.strip()
+    elif application_name_override and application_name_override.strip():
+        application_name = application_name_override.strip()
+    else:
+        application_name = infer_ucontrol_application_name(topology, structured_diagram)
     app_id = (
         config.app_id.strip()
         if config.app_id and config.app_id.strip()
@@ -381,6 +383,7 @@ def save_outputs(
     config: OutputConfig,
     structured_diagram: StructuredDiagram | None = None,
     llm_artifacts: dict[str, object] | None = None,
+    application_name_override: str | None = None,
 ) -> dict[str, Path]:
     """Save JSON, Mermaid, and optionally the structured intermediate payload."""
 
@@ -413,6 +416,7 @@ def save_outputs(
             topology=topology,
             config=config,
             structured_diagram=structured_diagram,
+            application_name_override=application_name_override,
         )
         ucontrol_model_create_path = output_dir / "ucontrol_model_create.json"
         ucontrol_model_create_path.write_text(

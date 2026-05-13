@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from itertools import count
 import re
 
@@ -10,24 +11,30 @@ from diagram_parser.config import GroupingConfig
 from diagram_parser.models import CandidateNode, OCRSpan, slugify
 
 
-TYPE_HINTS = {
-    "database": ("database", "db", "postgres", "mysql", "redis", "mongodb", "rds"),
-    "software": ("software", "application", "app", "api", "service", "frontend", "backend"),
-    "host": ("server", "host", "vm", "node", "ec2", "instance", "bastion"),
-    "firewall": ("firewall", "fw", "waf"),
-    "router_switch": ("gateway", "router", "switch", "network", "lb", "load balancer"),
-    "network": ("internet", "vpc", "subnet"),
-    "zone": ("zone", "segment", "dmz", "public", "private"),
-}
-
 EDGE_LABEL_PATTERN = re.compile(
     r"^(?:(?:tcp|udp|http|https|ssh|icmp|cp|rcp)[-\s]?\d+|portmapper\s*\d+)$",
     re.IGNORECASE,
 )
+ROLE_PREFIX_PATTERN = re.compile(r"^\s*(?P<role>web|app|application|db|database)\s*:", re.IGNORECASE)
+HOSTNAME_TOKEN_PATTERN = re.compile(r"\b[A-Z][A-Z0-9-]{4,}\b")
+DATABASE_TECH_PATTERN = re.compile(r"\b(?:postgres|postgresql|mysql|mariadb|redis|mongodb|oracle|sql\s*server|rds)\b", re.IGNORECASE)
 ZONE_LABEL_PATTERN = re.compile(
     r"\b(?:different network|network at|security zone|zone|segment|dmz)\b",
     re.IGNORECASE,
 )
+CLASSIFICATION_KEYWORDS = (
+    ("firewall", ("firewall", "fw", "waf")),
+    ("router_switch", ("gateway", "router", "switch", "network", "lb", "load balancer")),
+    ("host", ("server", "host", "vm", "node", "ec2", "instance", "bastion")),
+    ("software", ("software", "application", "app", "api", "service", "frontend", "backend")),
+    ("network", ("internet", "vpc", "subnet")),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class NodeTypeDecision:
+    node_type: str
+    reason: str
 
 
 class UnionFind:
@@ -90,14 +97,39 @@ def _is_merge_candidate(left: OCRSpan, right: OCRSpan, config: GroupingConfig) -
     return same_line or stacked or (nearby and _horizontal_overlap_ratio(left, right) >= 0.6)
 
 
-def _infer_type_hint(texts: tuple[str, ...]) -> str:
+def _has_hostname_token(label: str) -> bool:
+    return any(
+        any(char.isdigit() for char in match.group(0))
+        for match in HOSTNAME_TOKEN_PATTERN.finditer(label.upper())
+    )
+
+
+def _rationalize_node_type(texts: tuple[str, ...]) -> NodeTypeDecision:
     combined = " ".join(texts).lower()
+    label = " ".join(texts)
     if any(is_zone_label_text(text) for text in texts):
-        return "zone"
-    for type_hint, keywords in TYPE_HINTS.items():
+        return NodeTypeDecision("zone", "zone/segment wording")
+
+    role_match = ROLE_PREFIX_PATTERN.match(label)
+    has_hostname = _has_hostname_token(label)
+    if role_match and has_hostname:
+        role = role_match.group("role").lower()
+        return NodeTypeDecision("host", f"{role} role label contains hostname-like token")
+
+    if DATABASE_TECH_PATTERN.search(label):
+        return NodeTypeDecision("database", "database technology keyword")
+
+    if re.search(r"\b(?:db|database|datastore)\b", label, re.IGNORECASE):
+        return NodeTypeDecision("host", "database wording defaults to server/host")
+
+    for type_hint, keywords in CLASSIFICATION_KEYWORDS:
         if any(keyword in combined for keyword in keywords):
-            return type_hint
-    return "unknown"
+            return NodeTypeDecision(type_hint, f"keyword matched {type_hint}")
+
+    if has_hostname:
+        return NodeTypeDecision("host", "hostname-like token")
+
+    return NodeTypeDecision("unknown", "no strong type signal")
 
 
 def group_text_into_nodes(spans: list[OCRSpan], config: GroupingConfig) -> list[CandidateNode]:
@@ -135,6 +167,7 @@ def group_text_into_nodes(spans: list[OCRSpan], config: GroupingConfig) -> list[
         base_id = slugify(label)
         node_id = f"{page_id}-{base_id}-{next(id_counter)}"
         texts = tuple(span.text for span in ordered_group)
+        type_decision = _rationalize_node_type(texts)
         nodes.append(
             CandidateNode(
                 page_id=page_id,
@@ -143,7 +176,8 @@ def group_text_into_nodes(spans: list[OCRSpan], config: GroupingConfig) -> list[
                 bbox=bbox,
                 text_span_ids=tuple(span.span_id for span in ordered_group),
                 texts=texts,
-                type_hint=_infer_type_hint(texts),
+                type_hint=type_decision.node_type,
+                type_reason=type_decision.reason,
             )
         )
 

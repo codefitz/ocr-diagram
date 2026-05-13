@@ -115,6 +115,55 @@ def _polygon_to_bbox(points: list[list[float]]) -> tuple[BoundingBox, tuple[Poin
     return bbox, polygon  # type: ignore[return-value]
 
 
+def _map_ocr_polygon_to_page(
+    points: list[list[float]],
+    *,
+    scale: float,
+    padding_pixels: int,
+) -> list[list[float]]:
+    if scale <= 0:
+        raise ValueError(f"OCR image scale must be positive, got {scale!r}")
+    return [
+        [
+            max(0.0, (point[0] / scale) - padding_pixels),
+            max(0.0, (point[1] / scale) - padding_pixels),
+        ]
+        for point in points
+    ]
+
+
+def _prepare_image_for_ocr(page: DocumentPage, config: OCRConfig) -> Any:
+    image = page.image
+    padding = max(0, int(config.image_padding_pixels))
+    scale = float(config.image_scale)
+    if scale <= 0:
+        raise ValueError(f"OCR image scale must be positive, got {config.image_scale!r}")
+    if not padding and scale == 1.0:
+        return image
+
+    cv2 = _load_cv2()
+    if padding:
+        image = cv2.copyMakeBorder(
+            image,
+            padding,
+            padding,
+            padding,
+            padding,
+            cv2.BORDER_CONSTANT,
+            value=(255, 255, 255),
+        )
+    if scale != 1.0:
+        interpolation = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_AREA
+        image = cv2.resize(
+            image,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=interpolation,
+        )
+    return image
+
+
 def _normalize_polygon(raw_polygon: Any) -> list[list[float]]:
     if hasattr(raw_polygon, "tolist"):
         raw_polygon = raw_polygon.tolist()
@@ -177,6 +226,9 @@ def _extract_spans_from_payload(
     payload: Any,
     page_id: str,
     prediction_index: int,
+    *,
+    scale: float,
+    padding_pixels: int,
 ) -> list[OCRSpan]:
     spans: list[OCRSpan] = []
 
@@ -191,7 +243,12 @@ def _extract_spans_from_payload(
             text_value = str(text).strip()
             if not text_value:
                 continue
-            bbox, polygon = _polygon_to_bbox(_normalize_polygon(points))
+            mapped_points = _map_ocr_polygon_to_page(
+                _normalize_polygon(points),
+                scale=scale,
+                padding_pixels=padding_pixels,
+            )
+            bbox, polygon = _polygon_to_bbox(mapped_points)
             spans.append(
                 OCRSpan(
                     page_id=page_id,
@@ -215,7 +272,12 @@ def _extract_spans_from_payload(
         text_value = str(text).strip()
         if not text_value:
             continue
-        bbox, polygon = _polygon_to_bbox(_normalize_polygon(points))
+        mapped_points = _map_ocr_polygon_to_page(
+            _normalize_polygon(points),
+            scale=scale,
+            padding_pixels=padding_pixels,
+        )
+        bbox, polygon = _polygon_to_bbox(mapped_points)
         spans.append(
             OCRSpan(
                 page_id=page_id,
@@ -266,8 +328,11 @@ def run_ocr(pages: list[DocumentPage], config: OCRConfig) -> list[OCRSpan]:
 
     spans: list[OCRSpan] = []
     for page in pages:
+        ocr_image = _prepare_image_for_ocr(page, config)
+        padding = max(0, int(config.image_padding_pixels))
+        scale = float(config.image_scale)
         raw_results = ocr.predict(
-            page.image,
+            ocr_image,
             use_textline_orientation=config.use_angle_cls,
         )
         for prediction_index, result in enumerate(raw_results or []):
@@ -276,6 +341,8 @@ def run_ocr(pages: list[DocumentPage], config: OCRConfig) -> list[OCRSpan]:
                     payload=_coerce_prediction_payload(result),
                     page_id=page.page_id,
                     prediction_index=prediction_index,
+                    scale=scale,
+                    padding_pixels=padding,
                 )
             )
 
@@ -296,6 +363,8 @@ def build_ocr_cache_payload(
             "language": config.language,
             "use_angle_cls": config.use_angle_cls,
             "pdf_render_scale": config.pdf_render_scale,
+            "image_padding_pixels": config.image_padding_pixels,
+            "image_scale": config.image_scale,
             "max_pages": config.max_pages,
         },
         "spans": [span.to_dict() for span in spans],
@@ -318,6 +387,10 @@ def load_ocr_cache(cache_path: Path, *, source_path: Path, config: OCRConfig) ->
     if bool(cached_config.get("use_angle_cls")) != config.use_angle_cls:
         return None
     if float(cached_config.get("pdf_render_scale", -1.0)) != float(config.pdf_render_scale):
+        return None
+    if int(cached_config.get("image_padding_pixels", -1)) != int(config.image_padding_pixels):
+        return None
+    if float(cached_config.get("image_scale", -1.0)) != float(config.image_scale):
         return None
     if cached_config.get("max_pages") != config.max_pages:
         return None

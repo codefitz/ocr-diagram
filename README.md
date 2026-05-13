@@ -84,8 +84,23 @@ By default, prompts include local uControl/BMC Discovery guidance from
 descriptor for `/api/umap/model/create`, which takes query parameters rather
 than a JSON body; the populate file is shaped as the manual POST body for
 `/api/umap/populate/umap`; the retrieval file contains GET request descriptors
-for `/api/asset/data/{definition}` with a name filter. The tool does not create
-or call the API.
+for `/api/asset/data/{definition}` with a name filter.
+
+To create the uMap model, populate it with extracted hosts, and verify which
+hosts linked successfully:
+
+```bash
+export COOKIE="JSESSIONID=...; serverTime=...; sessionExpiry=..."
+.venv/bin/python ucontrol_populate.py tekucontrol.example.com \
+  --output-dir output/direct_llm \
+  --app-name "Correct App Name"
+```
+
+`--app-name` is optional and overrides the extracted model name. The script
+uses `/api/umap/model/create`, saves `data[0].uMapModelID` as the `uMapId`,
+posts hosts to `/api/umap/populate/umap`, then verifies them with
+`/api/umap/model/ci/list?kind=Host&uMapId=<id>`. Missing hosts are printed and
+the script exits with status `2`.
 
 Disable these independently when needed:
 
@@ -129,6 +144,10 @@ Each subdirectory may include:
 - `llm_debug.json`
 
 `ocr_spans.json` is reused automatically for the pipeline mode when the source path and OCR settings match, so you can tune grouping and connection logic without rerunning PaddleOCR every time. Use `--refresh-ocr-cache` to force a fresh OCR pass.
+
+Raster pages get a small white OCR border by default so labels touching an image edge are still detectable. Override it with `--ocr-image-padding`; use `--ocr-image-scale` to upscale small diagrams before OCR when needed.
+
+Candidate nodes include a `type_reason` in `structured_candidates.json` to show why the pipeline classified them as hosts, software, network devices, or databases. Labels such as `DB: host-name` default to host/server assets unless a database technology name, such as PostgreSQL or Redis, is the stronger signal.
 
 The `direct-llm` mode sends rendered page images to a multimodal endpoint. Use a vision-capable model there; text-only models will not work reliably.
 

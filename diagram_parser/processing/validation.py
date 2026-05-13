@@ -18,6 +18,11 @@ from diagram_parser.models import (
 PORT_LABEL_PATTERN = re.compile(r"^(?P<proto>[A-Za-z]+)[-\s]?(?P<port>\d+)$")
 PORT_VALUE_PATTERN = re.compile(r"\d+")
 HOSTNAME_TOKEN_PATTERN = re.compile(r"\b[A-Z][A-Z0-9-]{4,}\b")
+DATABASE_ROLE_HOST_PATTERN = re.compile(r"^\s*(?:db|database)\s*:", re.IGNORECASE)
+DATABASE_TECH_PATTERN = re.compile(
+    r"\b(?:postgres|postgresql|mysql|mariadb|redis|mongodb|oracle|sql\s*server|rds)\b",
+    re.IGNORECASE,
+)
 HOSTNAME_EXCLUDE_PATTERN = re.compile(
     r"^(?:WIN\d+|R\d+|V\d+|X\d+|RAM|GHZ|CPU|STANDARD|EDITION|SERVICE|PACK|BACKUP)$",
     re.IGNORECASE,
@@ -39,7 +44,7 @@ NODE_TYPE_ALIASES = {
     "db": "database",
 }
 ROLE_ONLY_HOST_LABEL_PATTERN = re.compile(
-    r"^(?:vm|server|servers|web servers?|data store server|backup|"
+    r"^(?:vm|server|servers|web servers?|db|database|data store server|backup|"
     r"ram|cpu|memory|storage|sghz|ghz|[0-9.]+\s*ghz)(?:\s+|$)",
     re.IGNORECASE,
 )
@@ -72,12 +77,18 @@ def _normalize_node_type(raw_type: Any) -> str:
 
 def _refine_node_type_from_label(label: str, node_type: str) -> str:
     lowered = label.lower()
+    if DATABASE_ROLE_HOST_PATTERN.match(label) and _extract_hostname_tokens(label):
+        return "host"
     if "firewall" in lowered or re.search(r"\bwaf\b|\bfw\b", lowered):
         return "firewall"
     if any(keyword in lowered for keyword in ("switch", "router", "load balancer", "gateway")):
         return "router_switch"
-    if any(keyword in lowered for keyword in ("database", " db", "postgres", "mysql", "redis", "mongodb", "rds")):
+    if DATABASE_TECH_PATTERN.search(label):
         return "database"
+    if node_type == "database" and _extract_hostname_tokens(label):
+        return "host"
+    if re.search(r"\b(?:db|database|datastore)\b", label, re.IGNORECASE):
+        return "host"
     return node_type
 
 
