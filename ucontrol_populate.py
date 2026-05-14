@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+import urllib3
 
 
 DEFAULT_OUTPUT_DIR = Path("output/direct_llm")
@@ -42,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cookie",
         default=os.environ.get("COOKIE"),
-        help="uControl Cookie header value. Defaults to COOKIE environment variable.",
+        help="Optional uControl Cookie header value. Defaults to COOKIE environment variable.",
     )
     parser.add_argument(
         "--environment-id",
@@ -54,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="HTTP timeout in seconds.",
+    )
+    parser.add_argument(
+        "--no-ssl-verify",
+        action="store_true",
+        help="Disable TLS certificate verification for uControl HTTPS requests.",
     )
     parser.add_argument(
         "--dry-run",
@@ -180,27 +186,24 @@ def response_json(response: requests.Response) -> Any:
 
 
 def host_names_from_ci_list(payload: Any) -> set[str]:
-    records: list[Any] = []
-    if isinstance(payload, list):
-        records = payload
-    elif isinstance(payload, dict):
-        for key in ("data", "dataItem", "items", "results"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                records = value
-                break
-        if not records and any(key in payload for key in ("name", "ciName", "assetName")):
-            records = [payload]
-
     names: set[str] = set()
-    for record in records:
+
+    def collect(record: Any) -> None:
+        if isinstance(record, list):
+            for item in record:
+                collect(item)
+            return
         if not isinstance(record, dict):
-            continue
+            return
         for key in ("name", "ciName", "assetName", "label"):
             value = record.get(key)
             if isinstance(value, str) and value.strip():
                 names.add(" ".join(value.split()).lower())
-                break
+                return
+        for key in ("data", "dataItem", "items", "results"):
+            collect(record.get(key))
+
+    collect(payload)
     return names
 
 
@@ -213,10 +216,20 @@ def ensure_success(response: requests.Response, action: str) -> Any:
     return payload
 
 
+def existing_model_umap_id(payload: Any) -> str | None:
+    if not isinstance(payload, dict) or payload.get("ok") is not False:
+        return None
+    message = payload.get("message")
+    if not isinstance(message, str) or "already exists" not in message.lower():
+        return None
+    try:
+        return extract_umap_id(payload)
+    except ValueError:
+        return None
+
+
 def main() -> None:
     args = build_parser().parse_args()
-    if not args.cookie and not args.dry_run:
-        raise RuntimeError("Missing cookie. Pass --cookie or set COOKIE in the environment.")
 
     base_url = normalize_base_url(args.server)
     model_descriptor = read_json(args.output_dir / "ucontrol_model_create.json")
@@ -233,7 +246,10 @@ def main() -> None:
 
     create_url = f"{base_url}/api/umap/model/create"
     populate_url = f"{base_url}/api/umap/populate/umap"
-    headers = {"Cookie": args.cookie or ""}
+    headers = {"Cookie": args.cookie} if args.cookie else {}
+    verify_ssl = not args.no_ssl_verify
+    if not verify_ssl:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     if args.dry_run:
         preview_umap_id = "<uMapModelID>"
@@ -251,16 +267,28 @@ def main() -> None:
         create_url,
         params=create_params,
         headers=headers,
+        verify=verify_ssl,
         timeout=args.timeout,
     )
-    create_payload = ensure_success(create_response, "Create model")
-    umap_id = extract_umap_id(create_payload)
+    create_payload = response_json(create_response)
+    existing_umap_id = existing_model_umap_id(create_payload)
+    if existing_umap_id is not None:
+        umap_id = existing_umap_id
+        reused_existing_model = True
+    else:
+        if create_response.status_code >= 400:
+            raise RuntimeError(f"Create model failed with HTTP {create_response.status_code}: {create_payload!r}")
+        if isinstance(create_payload, dict) and create_payload.get("ok") is False:
+            raise RuntimeError(f"Create model failed: {create_payload!r}")
+        umap_id = extract_umap_id(create_payload)
+        reused_existing_model = False
 
     body = populate_body(hosts, umap_id, args.environment_id)
     populate_response = requests.post(
         populate_url,
         data=json.dumps(body),
         headers={**headers, "Content-Type": "text/plain"},
+        verify=verify_ssl,
         timeout=args.timeout,
     )
     populate_payload = ensure_success(populate_response, "Populate uMap")
@@ -269,6 +297,7 @@ def main() -> None:
         f"{base_url}/api/umap/model/ci/list",
         params={"kind": "Host", "uMapId": umap_id},
         headers=headers,
+        verify=verify_ssl,
         timeout=args.timeout,
     )
     verify_payload = ensure_success(verify_response, "Verify model hosts")
@@ -281,6 +310,7 @@ def main() -> None:
         "expected_hosts": hosts,
         "linked_hosts": sorted(linked_names),
         "missing_hosts": missing_hosts,
+        "reused_existing_model": reused_existing_model,
         "populate_response": populate_payload,
     }
     print(json.dumps(result, indent=2))

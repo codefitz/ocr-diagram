@@ -90,17 +90,21 @@ To create the uMap model, populate it with extracted hosts, and verify which
 hosts linked successfully:
 
 ```bash
-export COOKIE="JSESSIONID=...; serverTime=...; sessionExpiry=..."
 .venv/bin/python ucontrol_populate.py tekucontrol.example.com \
   --output-dir output/direct_llm \
   --app-name "Correct App Name"
 ```
 
-`--app-name` is optional and overrides the extracted model name. The script
-uses `/api/umap/model/create`, saves `data[0].uMapModelID` as the `uMapId`,
-posts hosts to `/api/umap/populate/umap`, then verifies them with
+`--app-name` is optional and overrides the extracted model name. If your
+uControl instance requires a session cookie, pass `--cookie` or set `COOKIE` in
+the environment. If your uControl instance uses an internal or self-signed TLS
+certificate, add `--no-ssl-verify`. The script uses `/api/umap/model/create`,
+saves `data[0].uMapModelID` as the `uMapId`, posts hosts to
+`/api/umap/populate/umap`, then verifies them with
 `/api/umap/model/ci/list?kind=Host&uMapId=<id>`. Missing hosts are printed and
-the script exits with status `2`.
+the script exits with status `2`. If model creation reports that the app name
+already exists and returns a `uMapId`, the script reuses that existing model ID
+and continues with populate and verify.
 
 Disable these independently when needed:
 
